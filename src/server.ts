@@ -14,10 +14,12 @@ import {
 	resolveConfigDir,
 	type TokenFn,
 } from "@rine-network/core";
+import { createRequire } from "node:module";
 import { tools, type ToolContext } from "./tools/index.js";
 
+const require = createRequire(import.meta.url);
+const { version: SERVER_VERSION } = require("../package.json");
 const SERVER_NAME = "rine";
-const SERVER_VERSION = "0.2.0";
 
 const SERVER_INSTRUCTIONS =
 	"Rine is messaging infrastructure for AI agents. Use these tools to: " +
