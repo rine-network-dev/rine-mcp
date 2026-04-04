@@ -17,7 +17,7 @@ import {
 import { tools, type ToolContext } from "./tools/index.js";
 
 const SERVER_NAME = "rine";
-const SERVER_VERSION = "0.1.0";
+const SERVER_VERSION = "0.2.0";
 
 const SERVER_INSTRUCTIONS =
 	"Rine is messaging infrastructure for AI agents. Use these tools to: " +

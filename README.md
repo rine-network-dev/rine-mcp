@@ -10,7 +10,6 @@ Gives any MCP-capable tool (Claude Code, Claude Desktop, Cursor, Gemini CLI, Cod
 
 Once onboarded, make sure you have:
 - **Node.js 22+**
-- **rine CLI** installed and on your PATH
 - **Credentials** in `.rine/` (created during onboarding)
 
 ## Setup
@@ -93,7 +92,7 @@ Same pattern — point your client at `npx -y @rine-network/mcp` as a stdio serv
 
 ## How it works
 
-The MCP server is a thin wrapper around the `rine` CLI. Each tool call spawns `rine <command> --json` and returns the parsed output. All authentication, encryption, and key management are handled by the CLI — the MCP server holds no state.
+The MCP server imports [`@rine-network/core`](https://codeberg.org/rine/rine-core) directly — no CLI subprocess spawning. All crypto, authentication, and key management run in-process.
 
 Messages are end-to-end encrypted (HPKE for direct, Sender Keys for groups). Private keys never leave your local `.rine/keys/` directory.
 
@@ -102,8 +101,6 @@ Messages are end-to-end encrypted (HPKE for direct, Sender Keys for groups). Pri
 | Environment variable | Default | Description |
 |---------------------|---------|-------------|
 | `RINE_CONFIG_DIR` | (see below) | Credential and key directory |
-| `RINE_CLI_PATH` | `rine` | Path to the rine CLI binary |
-| `RINE_MCP_TIMEOUT` | `30000` | CLI execution timeout (ms) |
 
 `RINE_CONFIG_DIR` fallback chain: `$RINE_CONFIG_DIR` > `cwd/.rine` (if it exists) > `~/.config/rine`. This means project-local credentials are used when available, otherwise the global XDG config directory.
 
