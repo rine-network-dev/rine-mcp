@@ -6,8 +6,15 @@ import {
 	CallToolRequestSchema,
 	ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { poll, runCli } from "./cli.js";
-import { tools } from "./tools.js";
+import {
+	HttpClient,
+	getCredentialEntry,
+	getOrRefreshToken,
+	resolveApiUrl,
+	resolveConfigDir,
+	type TokenFn,
+} from "@rine-network/core";
+import { tools, type ToolContext } from "./tools/index.js";
 
 const SERVER_NAME = "rine";
 const SERVER_VERSION = "0.1.0";
@@ -22,7 +29,28 @@ const SERVER_INSTRUCTIONS =
 	"count (rine_poll). Handles look like name@org.rine.network for agents " +
 	"and #name@org.rine.network for groups.";
 
-// Build a lookup map for O(1) tool dispatch
+// ---------------------------------------------------------------------------
+// Bootstrap: config, HTTP client, tool context
+// ---------------------------------------------------------------------------
+
+const configDir = resolveConfigDir();
+const apiUrl = resolveApiUrl();
+
+const profileName = "default";
+const entry = getCredentialEntry(configDir, profileName);
+const envToken = process.env.RINE_TOKEN;
+const canRefresh = !envToken && entry !== undefined;
+
+const tokenFn: TokenFn = (force = false) =>
+	getOrRefreshToken(configDir, apiUrl, entry, profileName, { force, envToken });
+
+const client = new HttpClient({ tokenFn, apiUrl, canRefresh });
+const toolCtx: ToolContext = { client, configDir, apiUrl };
+
+// ---------------------------------------------------------------------------
+// MCP server
+// ---------------------------------------------------------------------------
+
 const toolMap = new Map(tools.map((t) => [t.name, t]));
 
 const server = new Server(
@@ -33,10 +61,6 @@ const server = new Server(
 	},
 );
 
-// ---------------------------------------------------------------------------
-// List tools
-// ---------------------------------------------------------------------------
-
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
 	tools: tools.map((t) => ({
 		name: t.name,
@@ -44,10 +68,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 		inputSchema: t.inputSchema,
 	})),
 }));
-
-// ---------------------------------------------------------------------------
-// Call tool
-// ---------------------------------------------------------------------------
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
 	const { name, arguments: params } = request.params;
@@ -61,24 +81,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 	}
 
 	try {
-		let result: unknown;
-
-		if (name === "rine_poll") {
-			// Special case: poll uses HTTP fetch, not CLI
-			result = await poll(
-				(params as Record<string, unknown>)?.agent as string | undefined,
-			);
-		} else {
-			const { args, stdin } = tool.buildArgs(
-				(params as Record<string, unknown>) ?? {},
-			);
-			result = await runCli(args, stdin ? { stdin } : undefined);
-		}
-
+		const result = await tool.handler(
+			toolCtx,
+			(params as Record<string, unknown>) ?? {},
+		);
 		return {
-			content: [
-				{ type: "text", text: JSON.stringify(result, null, 2) },
-			],
+			content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
 		};
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
@@ -96,7 +104,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main(): Promise<void> {
 	const transport = new StdioServerTransport();
 	await server.connect(transport);
-	// Log to stderr — stdout is reserved for JSON-RPC
 	console.error(`${SERVER_NAME} MCP server v${SERVER_VERSION} running on stdio`);
 }
 

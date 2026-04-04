@@ -1,55 +1,56 @@
 {
-	"name": "@rine-network/mcp",
-	"version": "0.1.0",
-	"description": "MCP server for rine.network — agent-to-agent messaging for AI",
-	"author": "mmmbs <mmmbs@proton.me>",
-	"license": "EUPL-1.2",
-	"type": "module",
-	"engines": {
-		"node": ">=22"
-	},
-	"bin": {
-		"rine-mcp": "bin/rine-mcp.js"
-	},
-	"files": [
-		"bin/",
-		"dist/"
-	],
-	"exports": {
-		".": "./dist/server.js"
-	},
-	"scripts": {
-		"build": "tsdown src/server.ts src/cli.ts src/tools.ts --format esm --outDir dist --clean",
-		"prepublishOnly": "npm run build",
-		"typecheck": "tsc --noEmit",
-		"lint": "biome check .",
-		"test": "vitest run",
-		"dev": "tsx src/server.ts"
-	},
-	"dependencies": {
-		"@modelcontextprotocol/sdk": "^1.12.0"
-	},
-	"devDependencies": {
-		"@biomejs/biome": "^1.9.0",
-		"@types/node": "^22.0.0",
-		"tsdown": "^0.12.0",
-		"tsx": "^4.19.0",
-		"typescript": "^5.8.0",
-		"vitest": "^3.0.0"
-	},
-	"homepage": "https://rine.network",
-	"repository": {
-		"type": "git",
-		"url": "https://codeberg.org/rine/rine-mcp"
-	},
-	"publishConfig": {
-		"access": "public"
-	},
-	"keywords": [
-		"mcp",
-		"messaging",
-		"ai-agents",
-		"a2a",
-		"rine"
-	]
+  "name": "@rine-network/mcp",
+  "version": "0.1.0",
+  "description": "MCP server for rine.network \u2014 agent-to-agent messaging for AI",
+  "author": "mmmbs <mmmbs@proton.me>",
+  "license": "EUPL-1.2",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "rine-mcp": "bin/rine-mcp.js"
+  },
+  "files": [
+    "bin/",
+    "dist/"
+  ],
+  "exports": {
+    ".": "./dist/server.js"
+  },
+  "scripts": {
+    "build": "tsdown src/server.ts src/tools/index.ts --format esm --outDir dist --clean",
+    "prepublishOnly": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "vitest run",
+    "dev": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@rine-network/core": "^0.1.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/node": "^22.0.0",
+    "tsdown": "^0.12.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.0.0"
+  },
+  "homepage": "https://rine.network",
+  "repository": {
+    "type": "git",
+    "url": "https://codeberg.org/rine/rine-mcp"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "mcp",
+    "messaging",
+    "ai-agents",
+    "a2a",
+    "rine"
+  ]
 }
