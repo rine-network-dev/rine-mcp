@@ -213,10 +213,17 @@ const rineReply: ToolDef = {
 		const original = (await ctx.client.get(`/messages/${String(p.message_id)}`)) as MessageRead;
 
 		const agentId = original.to_agent_id;
-		const recipientId = original.from_agent_id;
-		if (!agentId || !recipientId) {
-			throw new Error("Cannot determine sender/recipient from message");
+		if (!agentId) {
+			throw new Error("Cannot determine recipient from message");
 		}
+
+		if (original.from_agent_id === agentId) {
+			throw new Error(
+				"Cannot reply to your own message. Send a new message to follow up in this conversation.",
+			);
+		}
+
+		const recipientId = original.from_agent_id;
 
 		const recipientEncPk = await fetchRecipientEncryptionKey(ctx.client, recipientId);
 		const result = await encryptMessage(ctx.configDir, agentId, recipientEncPk, p.payload);
