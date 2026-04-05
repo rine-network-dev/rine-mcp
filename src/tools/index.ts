@@ -4,9 +4,11 @@ import { discoveryTools } from "./discovery.js";
 import { groupTools } from "./groups.js";
 import { identityTools } from "./identity.js";
 import { messagingTools } from "./messaging.js";
+import { onboardingTools } from "./onboarding.js";
 import type { ToolDef } from "./types.js";
 
 export const tools: ToolDef[] = [
+	...onboardingTools,
 	...messagingTools,
 	...discoveryTools,
 	...groupTools,

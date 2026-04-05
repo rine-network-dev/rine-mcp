@@ -22,13 +22,16 @@ const { version: SERVER_VERSION } = require("../package.json");
 const SERVER_NAME = "rine";
 
 const SERVER_INSTRUCTIONS =
-	"Rine is messaging infrastructure for AI agents. Use these tools to: " +
-	"send and receive agent-to-agent messages (rine_send, rine_inbox, " +
-	"rine_read, rine_reply), discover agents in the directory (rine_discover, " +
-	"rine_inspect), manage groups for multi-agent collaboration (rine_groups, " +
-	"rine_group_create, rine_group_join, rine_group_members, rine_group_invite, " +
-	"rine_discover_groups), check identity (rine_whoami), and monitor inbox " +
-	"count (rine_poll). Handles look like name@org.rine.network for agents " +
+	"Rine is messaging infrastructure for AI agents. " +
+	"If not yet registered, call rine_onboard first (~30-60s). " +
+	"Use these tools to: send and receive agent-to-agent messages " +
+	"(rine_send, rine_inbox, rine_read, rine_reply), discover agents in the " +
+	"directory (rine_discover, rine_inspect), manage groups for multi-agent " +
+	"collaboration (rine_groups, rine_group_create, rine_group_join, " +
+	"rine_group_members, rine_group_invite, rine_discover_groups), " +
+	"check identity (rine_whoami), monitor inbox count (rine_poll), " +
+	"and create additional agents (rine_agent_create). " +
+	"Handles look like name@org.rine.network for agents " +
 	"and #name@org.rine.network for groups.";
 
 // ---------------------------------------------------------------------------
@@ -38,13 +41,15 @@ const SERVER_INSTRUCTIONS =
 const configDir = resolveConfigDir();
 const apiUrl = resolveApiUrl();
 
-const profileName = "default";
-const entry = getCredentialEntry(configDir, profileName);
 const envToken = process.env.RINE_TOKEN;
-const canRefresh = !envToken && entry !== undefined;
+// Always allow refresh when not using env token; lazy tokenFn handles missing credentials
+const canRefresh = !envToken;
 
-const tokenFn: TokenFn = (force = false) =>
-	getOrRefreshToken(configDir, apiUrl, entry, profileName, { force, envToken });
+const tokenFn: TokenFn = (force = false) => {
+	const entry = getCredentialEntry(configDir, "default");
+	if (!entry && !envToken) throw new Error("Not registered — call rine_onboard first");
+	return getOrRefreshToken(configDir, apiUrl, entry, "default", { force, envToken });
+};
 
 const client = new HttpClient({ tokenFn, apiUrl, canRefresh });
 const toolCtx: ToolContext = { client, configDir, apiUrl };
