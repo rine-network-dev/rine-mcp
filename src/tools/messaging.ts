@@ -224,6 +224,9 @@ const rineReply: ToolDef = {
 		}
 
 		const recipientId = original.from_agent_id;
+		if (!recipientId) {
+			throw new Error("Original message has no sender — cannot determine reply recipient.");
+		}
 
 		const recipientEncPk = await fetchRecipientEncryptionKey(ctx.client, recipientId);
 		const result = await encryptMessage(ctx.configDir, agentId, recipientEncPk, p.payload);
