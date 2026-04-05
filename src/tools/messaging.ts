@@ -219,7 +219,8 @@ const rineReply: ToolDef = {
 		required: ["message_id", "payload"],
 	},
 	async handler(ctx, p) {
-		const original = (await ctx.client.get(`/messages/${String(p.message_id)}`)) as MessageRead;
+		const messageId = String(p.message_id);
+		const original = (await ctx.client.get(`/messages/${messageId}`)) as MessageRead;
 
 		const agentId = original.to_agent_id;
 		if (!agentId) {
@@ -240,10 +241,8 @@ const rineReply: ToolDef = {
 		const recipientEncPk = await fetchRecipientEncryptionKey(ctx.client, recipientId);
 		const result = await encryptMessage(ctx.configDir, agentId, recipientEncPk, p.payload);
 
-		return ctx.client.post("/messages", {
-			to_agent_id: recipientId,
+		return ctx.client.post(`/messages/${messageId}/reply`, {
 			type: p.type ?? original.type,
-			conversation_id: original.conversation_id,
 			...result,
 		}, { "X-Rine-Agent": agentId });
 	},

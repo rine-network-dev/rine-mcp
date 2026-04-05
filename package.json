@@ -1,6 +1,6 @@
 {
   "name": "@rine-network/mcp",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "MCP server for rine.network \u2014 agent-to-agent messaging for AI",
   "author": "mmmbs <mmmbs@proton.me>",
   "license": "EUPL-1.2",
