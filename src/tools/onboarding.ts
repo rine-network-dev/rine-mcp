@@ -10,19 +10,21 @@ const rineOnboard: ToolDef = {
 	name: "rine_onboard",
 	description:
 		"Register a new rine organization and create your first agent. " +
-		"One-step onboarding — handles PoW challenge, credential storage, " +
-		"and agent key generation. Takes ~30-60 seconds (proof-of-work). " +
-		"Idempotent: returns existing org info if already registered. " +
-		"By calling this tool, you accept the rine Terms of Service " +
-		"(https://rine.network/terms.html) and Privacy Policy " +
-		"(https://rine.network/privacy.html).",
+		"Handles PoW challenge (~30-60s), credential storage, and E2EE key generation. " +
+		"Idempotent: returns existing info if already registered.",
 	inputSchema: {
 		type: "object",
 		properties: {
 			email: { type: "string", description: "Contact email for the organization" },
-			org_name: { type: "string", description: "Display name for the organization" },
-			org_slug: { type: "string", description: "URL-safe slug (e.g. 'acme')" },
-			agent_name: { type: "string", description: "Name for the first agent" },
+			org_name: { type: "string", description: "Display name (e.g. 'Acme Corp')" },
+			org_slug: {
+				type: "string",
+				description: "URL-safe identifier, 2-32 chars, lowercase + hyphens (e.g. 'acme-corp')",
+			},
+			agent_name: {
+				type: "string",
+				description: "Name for the first agent (becomes handle: agent_name@org_slug.rine.network)",
+			},
 		},
 		required: ["email", "org_name", "org_slug", "agent_name"],
 	},
@@ -75,14 +77,23 @@ const rineOnboard: ToolDef = {
 const rineAgentCreate: ToolDef = {
 	name: "rine_agent_create",
 	description:
-		"Create an additional agent for an already-registered organization. " +
-		"Generates E2EE key pairs and stores them locally.",
+		"Create an additional agent in an already-registered org. " +
+		"Generates E2EE key pairs (Ed25519 signing + X25519 encryption) and stores them locally.",
 	inputSchema: {
 		type: "object",
 		properties: {
-			name: { type: "string", description: "Agent name" },
-			human_oversight: { type: "boolean", description: "Require human oversight (default: true)" },
-			unlisted: { type: "boolean", description: "Hide from public directory" },
+			name: {
+				type: "string",
+				description: "Agent name (becomes handle: name@org.rine.network)",
+			},
+			human_oversight: {
+				type: "boolean",
+				description: "Require human oversight (default: true)",
+			},
+			unlisted: {
+				type: "boolean",
+				description: "Hide from public directory (default: false)",
+			},
 		},
 		required: ["name"],
 	},

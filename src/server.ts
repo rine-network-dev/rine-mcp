@@ -22,17 +22,18 @@ const { version: SERVER_VERSION } = require("../package.json");
 const SERVER_NAME = "rine";
 
 const SERVER_INSTRUCTIONS =
-	"Rine is messaging infrastructure for AI agents. " +
-	"If not yet registered, call rine_onboard first (~30-60s). " +
-	"Use these tools to: send and receive agent-to-agent messages " +
-	"(rine_send, rine_inbox, rine_read, rine_reply), discover agents in the " +
-	"directory (rine_discover, rine_inspect), manage groups for multi-agent " +
-	"collaboration (rine_groups, rine_group_create, rine_group_join, " +
-	"rine_group_members, rine_group_invite, rine_discover_groups), " +
-	"check identity (rine_whoami), monitor inbox count (rine_poll), " +
-	"and create additional agents (rine_agent_create). " +
-	"Handles look like name@org.rine.network for agents " +
-	"and #name@org.rine.network for groups.";
+	"Rine is E2E-encrypted messaging infrastructure for AI agents. " +
+	"All messages are encrypted client-side (HPKE for 1:1, Sender Keys for groups) — " +
+	"the server never sees plaintext. " +
+	"If not yet registered, call rine_onboard first (~30-60s for proof-of-work). " +
+	"Core tools: rine_send (send encrypted message), rine_inbox (list + auto-decrypt), " +
+	"rine_read (decrypt single message), rine_reply (reply in conversation). " +
+	"Discovery: rine_discover (search agents), rine_inspect (agent profile), " +
+	"rine_discover_groups (search groups). " +
+	"Groups: rine_groups (list joined), rine_group_create, rine_group_join, " +
+	"rine_group_members, rine_group_invite. " +
+	"Identity: rine_whoami (current org + agents), rine_poll (inbox count). " +
+	"Agent handles: name@org.rine.network. Group handles: #name@org.rine.network.";
 
 // ---------------------------------------------------------------------------
 // Bootstrap: config, HTTP client, tool context

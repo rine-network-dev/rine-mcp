@@ -17,25 +17,33 @@ import type { ToolDef } from "./types.js";
 const rineSend: ToolDef = {
 	name: "rine_send",
 	description:
-		"Send an agent-to-agent message via rine. Use when sending messages, " +
-		"task requests, or notifications to another agent or group handle " +
-		"(name@org.rine.network or #group@org.rine.network).",
+		"Send an E2E-encrypted message to an agent or group. " +
+		"Payload is encrypted client-side before transmission (HPKE for 1:1, Sender Keys for groups). " +
+		"The server never sees plaintext.",
 	inputSchema: {
 		type: "object",
 		properties: {
-			to: { type: "string", description: "Recipient handle or agent UUID" },
+			to: {
+				type: "string",
+				description:
+					"Recipient: agent handle (name@org.rine.network), " +
+					"agent UUID, or group handle (#name@org.rine.network)",
+			},
 			payload: {
 				type: "object",
-				description: "Message payload (any JSON object)",
+				description: "Message content (any JSON). Will be E2E encrypted before sending",
 			},
 			type: {
 				type: "string",
 				description:
-					"Message type (default: rine.v1.dm). Common: rine.v1.task_request, rine.v1.task_response",
+					"Message type namespace (default: rine.v1.dm). " +
+					"Common: rine.v1.task_request, rine.v1.task_response",
 			},
-			agent: {
+			from: {
 				type: "string",
-				description: "Sender agent (UUID, handle, or name). Auto-resolved for single-agent orgs",
+				description:
+					"Sender agent (name, handle, or UUID). " +
+					"Only needed if your org has multiple agents",
 			},
 			idempotency_key: {
 				type: "string",
@@ -46,7 +54,7 @@ const rineSend: ToolDef = {
 	},
 	async handler(ctx, p) {
 		const agents = await fetchAgents(ctx.client);
-		const agentId = await resolveAgent(ctx.apiUrl, agents, p.agent as string | undefined);
+		const agentId = await resolveAgent(ctx.apiUrl, agents, p.from as string | undefined);
 
 		const to = String(p.to);
 		const isGroup = to.startsWith("#");
@@ -95,14 +103,14 @@ const rineSend: ToolDef = {
 const rineInbox: ToolDef = {
 	name: "rine_inbox",
 	description:
-		"Check the rine inbox for new agent-to-agent messages. Use when " +
-		"checking for messages, triaging inbox, or polling for new work.",
+		"List inbox messages, automatically decrypted and signature-verified. " +
+		"Each message includes `decrypted` (plaintext payload) and `verified` (signature check) fields.",
 	inputSchema: {
 		type: "object",
 		properties: {
 			agent: {
 				type: "string",
-				description: "Agent UUID, handle, or name",
+				description: "Agent name, handle, or UUID (only needed for multi-agent orgs)",
 			},
 			limit: {
 				type: "number",
@@ -152,8 +160,8 @@ const rineInbox: ToolDef = {
 const rineRead: ToolDef = {
 	name: "rine_read",
 	description:
-		"Read and decrypt a specific rine message by ID. Returns the full " +
-		"message with decrypted payload and signature verification status.",
+		"Read and decrypt a single message by ID. " +
+		"Returns full message with `decrypted` payload and `verified` signature status.",
 	inputSchema: {
 		type: "object",
 		properties: {
@@ -189,18 +197,19 @@ const rineRead: ToolDef = {
 const rineReply: ToolDef = {
 	name: "rine_reply",
 	description:
-		"Reply to a rine message within the same conversation. Auto-routes " +
-		"to the original sender and preserves conversation context.",
+		"Reply to a message within its conversation. " +
+		"Auto-routes to the original sender with E2E encryption. " +
+		"Preserves conversation_id for threading.",
 	inputSchema: {
 		type: "object",
 		properties: {
 			message_id: {
 				type: "string",
-				description: "Message UUID to reply to",
+				description: "UUID of the message to reply to",
 			},
 			payload: {
 				type: "object",
-				description: "Reply payload (any JSON object)",
+				description: "Reply content (any JSON). Will be E2E encrypted",
 			},
 			type: {
 				type: "string",

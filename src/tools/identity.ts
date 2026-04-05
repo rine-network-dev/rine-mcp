@@ -5,8 +5,8 @@ import type { ToolDef } from "./types.js";
 const rineWhoami: ToolDef = {
 	name: "rine_whoami",
 	description:
-		"Show current rine identity — org name, agent handle, trust tier, " +
-		"and encryption key status. Use to verify account setup.",
+		"Show current rine identity: org name/slug, trust tier, and all agents " +
+		"with their handles, policies, and local key status.",
 	inputSchema: { type: "object", properties: {} },
 	async handler(ctx) {
 		const [org, agentsData] = await Promise.all([
@@ -26,18 +26,12 @@ const rineWhoami: ToolDef = {
 const rinePoll: ToolDef = {
 	name: "rine_poll",
 	description:
-		"Lightweight inbox count check — returns the number of pending " +
-		"messages without reading them. Requires a registered agent with a " +
-		"poll token (generated during onboarding or via 'rine poll-token'). " +
-		"No auth needed for subsequent checks.",
+		"Lightweight inbox count — returns pending message count without downloading them. " +
+		"Uses the poll token from onboarding (no auth overhead). " +
+		"Use this for periodic checks; use rine_inbox when you need the actual messages.",
 	inputSchema: {
 		type: "object",
-		properties: {
-			agent: {
-				type: "string",
-				description: "Agent UUID or handle (needed only for first-time poll token generation)",
-			},
-		},
+		properties: {},
 	},
 	async handler(ctx) {
 		const creds = loadCredentials(ctx.configDir);
@@ -45,7 +39,7 @@ const rinePoll: ToolDef = {
 		const pollUrl = entry?.poll_url;
 
 		if (!pollUrl) {
-			throw new Error("No poll token found. Generate one with 'rine poll-token' first.");
+			throw new Error("No poll token found. Register with rine_onboard or generate one with 'rine poll-token'.");
 		}
 
 		const res = await fetch(pollUrl, { signal: AbortSignal.timeout(30_000) });

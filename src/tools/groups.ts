@@ -4,12 +4,15 @@ import type { ToolDef } from "./types.js";
 const rineGroups: ToolDef = {
 	name: "rine_groups",
 	description:
-		"List messaging groups the current org belongs to. Shows group names, " +
-		"handles, enrollment policies, and member counts.",
+		"List groups your org's agents belong to. " +
+		"Shows group names, handles, enrollment policies, and member counts.",
 	inputSchema: {
 		type: "object",
 		properties: {
-			agent: { type: "string", description: "Agent UUID, handle, or name" },
+			agent: {
+				type: "string",
+				description: "Agent name, handle, or UUID (only needed for multi-agent orgs)",
+			},
 		},
 	},
 	async handler(ctx, p) {
@@ -25,8 +28,9 @@ const rineGroups: ToolDef = {
 const rineGroupCreate: ToolDef = {
 	name: "rine_group_create",
 	description:
-		"Create a new rine messaging group for multi-agent collaboration. " +
-		"Send messages to groups via #name@org.rine.network handles.",
+		"Create a messaging group for multi-agent collaboration. " +
+		"Messages sent to groups use Sender Key encryption. " +
+		"Group handle format: #name@org.rine.network.",
 	inputSchema: {
 		type: "object",
 		properties: {
@@ -36,11 +40,11 @@ const rineGroupCreate: ToolDef = {
 			},
 			enrollment: {
 				type: "string",
-				description: "Join policy: open, closed, majority, or unanimity (default: open)",
+				description: "Join policy: open (default), closed, majority, or unanimity",
 			},
 			visibility: {
 				type: "string",
-				description: "Visibility: public or private (default: public for open groups)",
+				description: "Visibility: public (default for open) or private",
 			},
 		},
 		required: ["name"],
@@ -57,12 +61,12 @@ const rineGroupCreate: ToolDef = {
 const rineGroupJoin: ToolDef = {
 	name: "rine_group_join",
 	description:
-		"Join a rine group. For open groups, joins immediately. For approval-gated " +
-		"groups, submits a join request that members vote on.",
+		"Join a group. Open groups: instant join. " +
+		"Approval-gated groups: submits a request that members vote on.",
 	inputSchema: {
 		type: "object",
 		properties: {
-			group_id: { type: "string", description: "Group UUID to join" },
+			group_id: { type: "string", description: "Group UUID (from rine_discover_groups or rine_groups)" },
 			message: { type: "string", description: "Optional message with join request" },
 		},
 		required: ["group_id"],
@@ -77,11 +81,11 @@ const rineGroupJoin: ToolDef = {
 const rineGroupMembers: ToolDef = {
 	name: "rine_group_members",
 	description:
-		"List members of a rine group with their handles, roles, and join dates.",
+		"List members of a group with their handles, roles (admin/member), and join dates.",
 	inputSchema: {
 		type: "object",
 		properties: {
-			group_id: { type: "string", description: "Group UUID" },
+			group_id: { type: "string", description: "Group UUID (from rine_discover_groups or rine_groups)" },
 		},
 		required: ["group_id"],
 	},
@@ -93,15 +97,15 @@ const rineGroupMembers: ToolDef = {
 const rineGroupInvite: ToolDef = {
 	name: "rine_group_invite",
 	description:
-		"Invite an agent to a rine group. The invited agent can then join " +
-		"using the group join command.",
+		"Invite an agent to a group. Required for closed groups. " +
+		"The invited agent can then join with rine_group_join.",
 	inputSchema: {
 		type: "object",
 		properties: {
-			group_id: { type: "string", description: "Group UUID" },
+			group_id: { type: "string", description: "Group UUID (from rine_discover_groups or rine_groups)" },
 			agent: {
 				type: "string",
-				description: "Agent UUID or handle to invite",
+				description: "Agent handle (e.g. bot@acme.rine.network) or UUID to invite",
 			},
 			message: { type: "string", description: "Optional invitation message" },
 		},

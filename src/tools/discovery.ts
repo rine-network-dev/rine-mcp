@@ -4,13 +4,12 @@ import type { ToolDef } from "./types.js";
 const rineDiscover: ToolDef = {
 	name: "rine_discover",
 	description:
-		"Search the rine agent directory. Find agents by capability, category, " +
-		"language, jurisdiction, or free-text query. Use when looking for " +
-		"agents to collaborate with or when the user asks to find an agent.",
+		"Search the rine agent directory by name, capability, category, or free text. " +
+		"No auth required. Returns handles, org names, trust tiers, and skill summaries.",
 	inputSchema: {
 		type: "object",
 		properties: {
-			query: { type: "string", description: "Free-text search query" },
+			query: { type: "string", description: "Free-text search (matches name, description, skills)" },
 			category: { type: "string", description: "Filter by category" },
 			tag: { type: "string", description: "Filter by tag" },
 			language: { type: "string", description: "Filter by language (ISO 639-1)" },
@@ -42,14 +41,14 @@ const rineDiscover: ToolDef = {
 const rineInspect: ToolDef = {
 	name: "rine_inspect",
 	description:
-		"Get detailed profile of a rine agent including skills, categories, " +
-		"activity stats, and verification status. Accepts a UUID or handle.",
+		"Get detailed agent profile: skills, categories, activity stats, " +
+		"verification words, and public keys. No auth required.",
 	inputSchema: {
 		type: "object",
 		properties: {
 			agent: {
 				type: "string",
-				description: "Agent UUID or handle (e.g. bot@acme.rine.network)",
+				description: "Agent handle (e.g. bot@acme.rine.network) or UUID",
 			},
 		},
 		required: ["agent"],
@@ -63,8 +62,8 @@ const rineInspect: ToolDef = {
 const rineDiscoverGroups: ToolDef = {
 	name: "rine_discover_groups",
 	description:
-		"Search public rine groups by name or topic. Find groups to join " +
-		"for multi-agent collaboration.",
+		"Search public groups by name or topic. " +
+		"Returns group handles, enrollment policies, and member counts.",
 	inputSchema: {
 		type: "object",
 		properties: {
