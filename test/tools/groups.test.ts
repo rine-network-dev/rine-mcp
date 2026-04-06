@@ -32,11 +32,16 @@ function makeCtx(): ToolContext {
 }
 
 describe("rine_group_create", () => {
+	beforeEach(() => {
+		mockFetchAgents.mockReset();
+		mockResolveAgent.mockReset();
+	});
+
 	it("posts group with name only", async () => {
 		const ctx = makeCtx();
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "g1" });
 		await rineGroupCreate.handler(ctx, { name: "my-group" });
-		expect(ctx.client.post).toHaveBeenCalledWith("/groups", { name: "my-group" });
+		expect(ctx.client.post).toHaveBeenCalledWith("/groups", { name: "my-group" }, {});
 	});
 
 	it("includes enrollment and visibility when set", async () => {
@@ -51,23 +56,50 @@ describe("rine_group_create", () => {
 			name: "private-group",
 			enrollment_policy: "closed",
 			visibility: "private",
+		}, {});
+	});
+
+	it("resolves agent and sets X-Rine-Agent header when as is provided", async () => {
+		const ctx = makeCtx();
+		mockFetchAgents.mockResolvedValue([]);
+		mockResolveAgent.mockResolvedValue("agent-123");
+		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "g1" });
+		await rineGroupCreate.handler(ctx, { name: "my-group", as: "mybot" });
+		expect(ctx.client.post).toHaveBeenCalledWith("/groups", { name: "my-group" }, {
+			"X-Rine-Agent": "agent-123",
 		});
 	});
 });
 
 describe("rine_group_join", () => {
+	beforeEach(() => {
+		mockFetchAgents.mockReset();
+		mockResolveAgent.mockReset();
+	});
+
 	it("posts to correct group join path", async () => {
 		const ctx = makeCtx();
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({});
 		await rineGroupJoin.handler(ctx, { group_id: "g1" });
-		expect(ctx.client.post).toHaveBeenCalledWith("/groups/g1/join", {});
+		expect(ctx.client.post).toHaveBeenCalledWith("/groups/g1/join", {}, {});
 	});
 
 	it("includes message when provided", async () => {
 		const ctx = makeCtx();
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({});
 		await rineGroupJoin.handler(ctx, { group_id: "g1", message: "hello" });
-		expect(ctx.client.post).toHaveBeenCalledWith("/groups/g1/join", { message: "hello" });
+		expect(ctx.client.post).toHaveBeenCalledWith("/groups/g1/join", { message: "hello" }, {});
+	});
+
+	it("resolves agent and sets X-Rine-Agent header when as is provided", async () => {
+		const ctx = makeCtx();
+		mockFetchAgents.mockResolvedValue([]);
+		mockResolveAgent.mockResolvedValue("agent-456");
+		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({});
+		await rineGroupJoin.handler(ctx, { group_id: "g1", as: "mybot" });
+		expect(ctx.client.post).toHaveBeenCalledWith("/groups/g1/join", {}, {
+			"X-Rine-Agent": "agent-456",
+		});
 	});
 });
 
@@ -83,7 +115,11 @@ describe("rine_group_members", () => {
 });
 
 describe("rine_group_invite", () => {
-	beforeEach(() => mockResolveToUuid.mockReset());
+	beforeEach(() => {
+		mockResolveToUuid.mockReset();
+		mockFetchAgents.mockReset();
+		mockResolveAgent.mockReset();
+	});
 
 	it("resolves agent handle then posts invite", async () => {
 		const ctx = makeCtx();
@@ -95,6 +131,7 @@ describe("rine_group_invite", () => {
 		expect(ctx.client.post).toHaveBeenCalledWith(
 			"/groups/g1/invite",
 			{ agent_id: "agent-uuid" },
+			{},
 		);
 	});
 
@@ -111,6 +148,27 @@ describe("rine_group_invite", () => {
 		expect(ctx.client.post).toHaveBeenCalledWith(
 			"/groups/g1/invite",
 			{ agent_id: "agent-uuid", message: "join us" },
+			{},
+		);
+	});
+
+	it("resolves acting agent and sets X-Rine-Agent header when as is provided", async () => {
+		const ctx = makeCtx();
+		mockResolveToUuid.mockResolvedValue("target-uuid");
+		mockFetchAgents.mockResolvedValue([]);
+		mockResolveAgent.mockResolvedValue("actor-789");
+		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({});
+
+		await rineGroupInvite.handler(ctx, {
+			group_id: "g1",
+			agent: "target@org.rine.network",
+			as: "mybot",
+		});
+		expect(mockResolveToUuid).toHaveBeenCalledWith("https://api.test", "target@org.rine.network");
+		expect(ctx.client.post).toHaveBeenCalledWith(
+			"/groups/g1/invite",
+			{ agent_id: "target-uuid" },
+			{ "X-Rine-Agent": "actor-789" },
 		);
 	});
 });

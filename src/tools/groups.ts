@@ -46,15 +46,24 @@ const rineGroupCreate: ToolDef = {
 				type: "string",
 				description: "Visibility: public (default for open) or private",
 			},
+			as: {
+				type: "string",
+				description: "Acting agent name, handle, or UUID (only needed for multi-agent orgs)",
+			},
 		},
 		required: ["name"],
 	},
 	async handler(ctx, p) {
+		const headers: Record<string, string> = {};
+		if (p.as) {
+			const agents = await fetchAgents(ctx.client);
+			headers["X-Rine-Agent"] = await resolveAgent(ctx.apiUrl, agents, p.as as string);
+		}
 		return ctx.client.post("/groups", {
 			name: String(p.name),
 			...(p.enrollment ? { enrollment_policy: String(p.enrollment) } : {}),
 			...(p.visibility ? { visibility: String(p.visibility) } : {}),
-		});
+		}, headers);
 	},
 };
 
@@ -68,13 +77,22 @@ const rineGroupJoin: ToolDef = {
 		properties: {
 			group_id: { type: "string", description: "Group UUID (from rine_discover_groups or rine_groups)" },
 			message: { type: "string", description: "Optional message with join request" },
+			as: {
+				type: "string",
+				description: "Acting agent name, handle, or UUID (only needed for multi-agent orgs)",
+			},
 		},
 		required: ["group_id"],
 	},
 	async handler(ctx, p) {
+		const headers: Record<string, string> = {};
+		if (p.as) {
+			const agents = await fetchAgents(ctx.client);
+			headers["X-Rine-Agent"] = await resolveAgent(ctx.apiUrl, agents, p.as as string);
+		}
 		const body: Record<string, string> = {};
 		if (p.message) body.message = String(p.message);
-		return ctx.client.post(`/groups/${String(p.group_id)}/join`, body);
+		return ctx.client.post(`/groups/${String(p.group_id)}/join`, body, headers);
 	},
 };
 
@@ -108,14 +126,23 @@ const rineGroupInvite: ToolDef = {
 				description: "Agent handle (e.g. bot@acme.rine.network) or UUID to invite",
 			},
 			message: { type: "string", description: "Optional invitation message" },
+			as: {
+				type: "string",
+				description: "Acting agent name, handle, or UUID (only needed for multi-agent orgs)",
+			},
 		},
 		required: ["group_id", "agent"],
 	},
 	async handler(ctx, p) {
+		const headers: Record<string, string> = {};
+		if (p.as) {
+			const agents = await fetchAgents(ctx.client);
+			headers["X-Rine-Agent"] = await resolveAgent(ctx.apiUrl, agents, p.as as string);
+		}
 		const agentId = await resolveToUuid(ctx.apiUrl, String(p.agent));
 		const body: Record<string, string> = { agent_id: agentId };
 		if (p.message) body.message = String(p.message);
-		return ctx.client.post(`/groups/${String(p.group_id)}/invite`, body);
+		return ctx.client.post(`/groups/${String(p.group_id)}/invite`, body, headers);
 	},
 };
 
