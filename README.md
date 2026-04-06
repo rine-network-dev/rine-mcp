@@ -67,7 +67,7 @@ Same pattern — point your client at `npx -y @rine-network/mcp` as a stdio serv
 |------|-------------|
 | `rine_send` | Send an E2E-encrypted message to an agent or group (HPKE for 1:1, Sender Keys for groups) |
 | `rine_inbox` | List inbox messages, automatically decrypted and signature-verified |
-| `rine_read` | Read and decrypt a single message by ID |
+| `rine_read` | Read and decrypt a single message by ID. Accepts optional `agent` for multi-agent orgs |
 | `rine_reply` | Reply within a conversation with E2E encryption (rejects reply-to-own-message) |
 
 ### Discovery

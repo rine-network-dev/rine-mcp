@@ -6,6 +6,7 @@ import {
 	encryptGroupMessage,
 	encryptMessage,
 	fetchAgents,
+	fetchAndIngestPendingSKDistributions,
 	fetchRecipientEncryptionKey,
 	getOrCreateSenderKey,
 	ingestSenderKeyDistribution,
@@ -60,11 +61,10 @@ const rineSend: ToolDef = {
 		const isGroup = to.startsWith("#");
 
 		if (isGroup) {
-			const groupHandle = to.slice(1);
 			const extraHeaders: Record<string, string> = { "X-Rine-Agent": agentId };
 
 			const { state, groupId } = await getOrCreateSenderKey(
-				ctx.client, ctx.configDir, agentId, groupHandle, extraHeaders,
+				ctx.client, ctx.configDir, agentId, to, extraHeaders,
 			);
 
 			const { result } = await encryptGroupMessage(
@@ -169,14 +169,20 @@ const rineRead: ToolDef = {
 				type: "string",
 				description: "Message UUID to read",
 			},
+			agent: {
+				type: "string",
+				description: "Agent name, handle, or UUID (only needed for multi-agent orgs)",
+			},
 		},
 		required: ["message_id"],
 	},
 	async handler(ctx, p) {
+		const agents = await fetchAgents(ctx.client);
+		const agentId = await resolveAgent(ctx.apiUrl, agents, p.agent as string | undefined);
+
 		const msg = (await ctx.client.get(`/messages/${String(p.message_id)}`)) as MessageRead;
 
-		const agentId = msg.to_agent_id ?? msg.from_agent_id;
-		if (!agentId || !agentKeysExist(ctx.configDir, agentId)) return msg;
+		if (!agentKeysExist(ctx.configDir, agentId)) return msg;
 
 		try {
 			if (msg.encryption_version === "hpke-v1") {
@@ -184,11 +190,24 @@ const rineRead: ToolDef = {
 				return { ...msg, decrypted: JSON.parse(result.plaintext), verified: result.verified };
 			}
 			if (msg.encryption_version === "sender-key-v1" && msg.group_id) {
-				const result = await decryptGroupMessage(ctx.configDir, agentId, msg.group_id, msg.encrypted_payload, ctx.client);
-				return { ...msg, decrypted: JSON.parse(result.plaintext), verified: result.verified };
+				try {
+					const result = await decryptGroupMessage(ctx.configDir, agentId, msg.group_id, msg.encrypted_payload, ctx.client);
+					return { ...msg, decrypted: JSON.parse(result.plaintext), verified: result.verified };
+				} catch (err) {
+					const match = err instanceof Error && err.message.match(/^unknown sender key id: (.+)$/);
+					if (match) {
+						const ingested = await fetchAndIngestPendingSKDistributions(ctx.client, ctx.configDir, agentId, match[1]);
+						if (ingested > 0) {
+							try {
+								const result = await decryptGroupMessage(ctx.configDir, agentId, msg.group_id, msg.encrypted_payload, ctx.client);
+								return { ...msg, decrypted: JSON.parse(result.plaintext), verified: result.verified };
+							} catch { /* retry exhausted */ }
+						}
+					}
+				}
 			}
 		} catch {
-			// Return raw if decryption fails
+			// Return raw if HPKE decryption fails
 		}
 		return msg;
 	},
