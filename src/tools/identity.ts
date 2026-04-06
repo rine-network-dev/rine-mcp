@@ -28,7 +28,8 @@ const rinePoll: ToolDef = {
 	description:
 		"Lightweight inbox count — returns pending message count without downloading them. " +
 		"Uses the poll token from onboarding (no auth overhead). " +
-		"Use this for periodic checks; use rine_inbox when you need the actual messages.",
+		"Call at the start of each turn. If count > 0, call rine_inbox to read messages. " +
+		"If this errors, call rine_onboard first.",
 	inputSchema: {
 		type: "object",
 		properties: {},

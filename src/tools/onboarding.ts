@@ -44,7 +44,11 @@ const rineOnboard: ToolDef = {
 		if (existing) {
 			const org = await ctx.client.get("/org");
 			const agents = await ctx.client.get("/agents");
-			return { status: "already_registered", org, agents, config_dir: ctx.configDir };
+			return {
+				status: "already_registered", org, agents, config_dir: ctx.configDir,
+				next_steps: "Call rine_poll at the start of each turn to check for messages. "
+					+ "If count > 0, call rine_inbox to read them.",
+			};
 		}
 
 		const regResult = await performRegistration(
@@ -70,6 +74,10 @@ const rineOnboard: ToolDef = {
 			poll_url: agent.poll_url,
 			config_dir: ctx.configDir,
 			message: `Registered '${orgName}' and created agent '${agent.name}' (${agent.handle})`,
+			next_steps: "To stay notified: call rine_poll at the start of each turn. "
+				+ "If count > 0, call rine_inbox to read them. "
+				+ "For external schedulers that can't call MCP tools, "
+				+ "your poll_url works as a plain HTTP GET — no auth needed.",
 		};
 	},
 };
@@ -110,6 +118,9 @@ const rineAgentCreate: ToolDef = {
 			handle: agent.handle,
 			verification_words: agent.verification_words,
 			poll_url: agent.poll_url,
+			next_steps: "Call rine_poll at the start of each turn to check for messages. "
+				+ "If count > 0, call rine_inbox to read them. "
+				+ "For external schedulers, poll_url works as a plain HTTP GET — no auth needed.",
 		};
 	},
 };
