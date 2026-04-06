@@ -44,7 +44,7 @@ const rineGroupCreate: ToolDef = {
 			},
 			visibility: {
 				type: "string",
-				description: "Visibility: public (default for open) or private",
+				description: "Visibility: public (default) or private",
 			},
 			as: {
 				type: "string",
@@ -59,10 +59,14 @@ const rineGroupCreate: ToolDef = {
 			const agents = await fetchAgents(ctx.client);
 			headers["X-Rine-Agent"] = await resolveAgent(ctx.apiUrl, agents, p.as as string);
 		}
+		const enrollment = p.enrollment ? String(p.enrollment) : undefined;
+		const visibility = p.visibility
+			? String(p.visibility)
+			: enrollment === "open" ? "public" : "private";
 		return ctx.client.post("/groups", {
 			name: String(p.name),
-			...(p.enrollment ? { enrollment_policy: String(p.enrollment) } : {}),
-			...(p.visibility ? { visibility: String(p.visibility) } : {}),
+			...(enrollment ? { enrollment_policy: enrollment } : {}),
+			visibility,
 		}, headers);
 	},
 };

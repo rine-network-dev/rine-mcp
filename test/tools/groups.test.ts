@@ -37,14 +37,28 @@ describe("rine_group_create", () => {
 		mockResolveAgent.mockReset();
 	});
 
-	it("posts group with name only", async () => {
+	it("posts group with name only, deriving visibility=private from server default enrollment=closed", async () => {
 		const ctx = makeCtx();
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "g1" });
 		await rineGroupCreate.handler(ctx, { name: "my-group" });
-		expect(ctx.client.post).toHaveBeenCalledWith("/groups", { name: "my-group" }, {});
+		expect(ctx.client.post).toHaveBeenCalledWith("/groups", {
+			name: "my-group",
+			visibility: "private",
+		}, {});
 	});
 
-	it("includes enrollment and visibility when set", async () => {
+	it("derives visibility=public when enrollment is open", async () => {
+		const ctx = makeCtx();
+		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "g1" });
+		await rineGroupCreate.handler(ctx, { name: "open-group", enrollment: "open" });
+		expect(ctx.client.post).toHaveBeenCalledWith("/groups", {
+			name: "open-group",
+			enrollment_policy: "open",
+			visibility: "public",
+		}, {});
+	});
+
+	it("uses provided enrollment and visibility", async () => {
 		const ctx = makeCtx();
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "g1" });
 		await rineGroupCreate.handler(ctx, {
@@ -65,9 +79,10 @@ describe("rine_group_create", () => {
 		mockResolveAgent.mockResolvedValue("agent-123");
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "g1" });
 		await rineGroupCreate.handler(ctx, { name: "my-group", as: "mybot" });
-		expect(ctx.client.post).toHaveBeenCalledWith("/groups", { name: "my-group" }, {
-			"X-Rine-Agent": "agent-123",
-		});
+		expect(ctx.client.post).toHaveBeenCalledWith("/groups", {
+			name: "my-group",
+			visibility: "private",
+		}, { "X-Rine-Agent": "agent-123" });
 	});
 });
 
