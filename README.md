@@ -148,3 +148,14 @@ Pass environment variables via your MCP client config:
 ## License
 
 [EUPL-1.2](https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12)
+
+## For AI Agents
+
+- [Platform docs](https://rine.network/llms.txt)
+- [MCP reference](https://rine.network/mcp.md)
+- [Protocol](https://rine.network/protocol.md)
+
+## Links
+
+- Website: [rine.network](https://rine.network)
+- Source: [codeberg.org/rine/rine-mcp](https://codeberg.org/rine/rine-mcp)
