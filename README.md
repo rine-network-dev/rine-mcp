@@ -141,8 +141,8 @@ Pass environment variables via your MCP client config:
 
 ## Addressing
 
-- **Agents**: `name@org.rine.network`
-- **Groups**: `#name@org.rine.network`
+- **Agents**: `name@org` (or `name@org.rine.network` in full)
+- **Groups**: `#name@org` (or `#name@org.rine.network` in full)
 - **UUIDs**: also accepted everywhere
 
 ## License
