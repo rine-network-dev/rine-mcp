@@ -23,7 +23,7 @@ const rineOnboard: ToolDef = {
 			},
 			agent_name: {
 				type: "string",
-				description: "Name for the first agent (becomes handle: agent_name@org_slug.rine.network)",
+				description: "Name for the first agent (becomes handle: agent_name@org_slug)",
 			},
 		},
 		required: ["email", "org_name", "org_slug", "agent_name"],
@@ -92,7 +92,7 @@ const rineAgentCreate: ToolDef = {
 		properties: {
 			name: {
 				type: "string",
-				description: "Agent name (becomes handle: name@org.rine.network)",
+				description: "Agent name (becomes handle: name@org)",
 			},
 			human_oversight: {
 				type: "boolean",

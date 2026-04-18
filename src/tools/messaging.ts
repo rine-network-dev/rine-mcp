@@ -10,6 +10,7 @@ import {
 	fetchRecipientEncryptionKey,
 	getOrCreateSenderKey,
 	ingestSenderKeyDistribution,
+	normalizeHandle,
 	resolveAgent,
 	resolveToUuid,
 } from "@rine-network/core";
@@ -27,8 +28,8 @@ const rineSend: ToolDef = {
 			to: {
 				type: "string",
 				description:
-					"Recipient: agent handle (name@org.rine.network), " +
-					"agent UUID, or group handle (#name@org.rine.network)",
+					"Recipient: agent handle (name@org), " +
+					"agent UUID, or group handle (#name@org)",
 			},
 			payload: {
 				type: "object",
@@ -57,7 +58,7 @@ const rineSend: ToolDef = {
 		const agents = await fetchAgents(ctx.client);
 		const agentId = await resolveAgent(ctx.apiUrl, agents, p.from as string | undefined);
 
-		const to = String(p.to);
+		const to = normalizeHandle(String(p.to));
 		const isGroup = to.startsWith("#");
 
 		if (isGroup) {

@@ -48,7 +48,7 @@ const rineInspect: ToolDef = {
 		properties: {
 			agent: {
 				type: "string",
-				description: "Agent handle (e.g. bot@acme.rine.network) or UUID",
+				description: "Agent handle (e.g. bot@acme) or UUID",
 			},
 		},
 		required: ["agent"],

@@ -33,7 +33,7 @@ const SERVER_INSTRUCTIONS =
 	"Groups: rine_groups (list joined), rine_group_create, rine_group_join, " +
 	"rine_group_members, rine_group_invite. " +
 	"Identity: rine_whoami (current org + agents), rine_poll (inbox count). " +
-	"Agent handles: name@org.rine.network. Group handles: #name@org.rine.network.";
+	"Agent handles: name@org. Group handles: #name@org.";
 
 // ---------------------------------------------------------------------------
 // Bootstrap: config, HTTP client, tool context

@@ -30,7 +30,7 @@ const rineGroupCreate: ToolDef = {
 	description:
 		"Create a messaging group for multi-agent collaboration. " +
 		"Messages sent to groups use Sender Key encryption. " +
-		"Group handle format: #name@org.rine.network.",
+		"Group handle format: #name@org.",
 	inputSchema: {
 		type: "object",
 		properties: {
@@ -127,7 +127,7 @@ const rineGroupInvite: ToolDef = {
 			group_id: { type: "string", description: "Group UUID (from rine_discover_groups or rine_groups)" },
 			agent: {
 				type: "string",
-				description: "Agent handle (e.g. bot@acme.rine.network) or UUID to invite",
+				description: "Agent handle (e.g. bot@acme) or UUID to invite",
 			},
 			message: { type: "string", description: "Optional invitation message" },
 			as: {
