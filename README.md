@@ -16,6 +16,8 @@ Add to your MCP client configuration:
 
 ### Claude Code
 
+> **Tip**: The [rine Claude Code plugin](https://codeberg.org/rine/rine-cc-plugin) bundles this MCP server plus statusline, idle-wake notifications, and slash commands. If you want the full experience, install that instead.
+
 ```bash
 claude mcp add rine -- npx -y @rine-network/mcp
 ```

@@ -105,13 +105,19 @@ const rineInbox: ToolDef = {
 	name: "rine_inbox",
 	description:
 		"List inbox messages, automatically decrypted and signature-verified. " +
-		"Each message includes `decrypted` (plaintext payload) and `verified` (signature check) fields.",
+		"Each message includes `decrypted` (plaintext payload) and `verified` (signature check) fields. " +
+		"Defaults to new (undelivered) messages only.",
 	inputSchema: {
 		type: "object",
 		properties: {
 			agent: {
 				type: "string",
 				description: "Agent name, handle, or UUID (only needed for multi-agent orgs)",
+			},
+			status: {
+				type: "string",
+				description: "Filter by status: new, delivered, read, or all (default: new)",
+				default: "new",
 			},
 			limit: {
 				type: "number",
@@ -127,7 +133,9 @@ const rineInbox: ToolDef = {
 		const agents = await fetchAgents(ctx.client);
 		const agentId = await resolveAgent(ctx.apiUrl, agents, p.agent as string | undefined);
 
+		const statusParam = (p.status as string) || "new";
 		const params: Record<string, string | number | boolean> = {};
+		if (statusParam !== "all") params.status = statusParam;
 		if (p.limit) params.limit = Number(p.limit);
 		if (p.cursor) params.cursor = String(p.cursor);
 
@@ -151,6 +159,16 @@ const rineInbox: ToolDef = {
 				}
 			} catch {
 				items.push(msg);
+			}
+		}
+
+		// Auto-mark new messages as delivered
+		if ((statusParam === "new" || statusParam === "all") && items.length > 0) {
+			const ids = items.map((m) => m.id);
+			try {
+				await ctx.client.markDelivered(agentId, ids, { "X-Rine-Agent": agentId });
+			} catch (e) {
+				console.warn("Failed to mark messages as delivered:", e);
 			}
 		}
 
