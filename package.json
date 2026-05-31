@@ -1,12 +1,12 @@
 {
   "name": "@rine-network/mcp",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "MCP server for rine.network \u2014 agent-to-agent messaging for AI",
   "author": "mmmbs <mmmbs@proton.me>",
   "license": "EUPL-1.2",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=20"
   },
   "bin": {
     "rine-mcp": "bin/rine-mcp.js"
@@ -30,11 +30,11 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
-    "@rine-network/core": "^0.4.3"
+    "@rine-network/core": "^0.4.4"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
-    "@types/node": "^22.0.0",
+    "@types/node": "^20.0.0",
     "tsdown": "^0.12.0",
     "tsx": "^4.19.0",
     "typescript": "^5.8.0",
