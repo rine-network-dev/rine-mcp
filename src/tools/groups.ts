@@ -1,5 +1,64 @@
-import { fetchAgents, resolveAgent, resolveToUuid } from "@rine-network/core";
-import type { ToolDef } from "./types.js";
+import {
+	type GroupRead,
+	type HttpClient,
+	addMlsGroupMember,
+	externalJoinMlsGroup,
+	fetchAgents,
+	initMlsGroup,
+	loadMlsState,
+	processMlsWelcomes,
+	resolveAgent,
+	resolveToUuid,
+} from "@rine-network/core";
+import type { ToolContext, ToolDef } from "./types.js";
+
+// Best-effort: if the group is MLS-active, add a member (claim KP, commit,
+// deliver Welcome) as the acting admin. No-op for sender-key groups. Mirrors
+// the CLI's `addMemberToMls`. `groupId` is the rine group UUID — never the
+// opaque `mls_group_id` latch — and is what `addMlsGroupMember` keys on.
+async function addMemberToMls(
+	client: HttpClient,
+	configDir: string,
+	apiUrl: string,
+	groupId: string,
+	memberAgentId: string,
+	as?: string,
+): Promise<void> {
+	try {
+		const group = (await client.get(`/groups/${groupId}`)) as GroupRead;
+		if (!group.mls_group_id) return;
+		const agents = await fetchAgents(client);
+		const adminId = await resolveAgent(apiUrl, agents, as);
+		await addMlsGroupMember(configDir, adminId, groupId, memberAgentId, client, {
+			"X-Rine-Agent": adminId,
+		});
+	} catch (e) {
+		console.warn(`MLS add-member failed for group ${groupId}:`, e);
+	}
+}
+
+// Best-effort: for an MLS-active group the joiner just joined, if the Welcome
+// path installed no local MLS state (the open-enrollment case — the server
+// added them with no member in the loop, so no Welcome was minted), self-join
+// via an RFC 9420 external commit so the joiner becomes a real MLS member and
+// can send/receive. No-op for sender-key groups or when a Welcome already
+// established state. Non-fatal — mirrors the surface's other MLS error handling.
+async function externalJoinFallback(
+	ctx: ToolContext,
+	agentId: string,
+	groupId: string,
+): Promise<void> {
+	try {
+		const group = (await ctx.client.get(`/groups/${groupId}`)) as GroupRead;
+		if (!group.mls_group_id) return;
+		if (loadMlsState(ctx.configDir, agentId, groupId)) return;
+		await externalJoinMlsGroup(ctx.configDir, agentId, groupId, ctx.client, {
+			"X-Rine-Agent": agentId,
+		});
+	} catch (e) {
+		console.warn(`MLS external self-join failed for group ${groupId}:`, e);
+	}
+}
 
 const rineGroups: ToolDef = {
 	name: "rine_groups",
@@ -11,7 +70,8 @@ const rineGroups: ToolDef = {
 		properties: {
 			agent: {
 				type: "string",
-				description: "Agent name, handle, or UUID (only needed for multi-agent orgs)",
+				description:
+					"Agent name, handle, or UUID (only needed for multi-agent orgs)",
 			},
 		},
 	},
@@ -19,7 +79,11 @@ const rineGroups: ToolDef = {
 		const headers: Record<string, string> = {};
 		if (p.agent) {
 			const agents = await fetchAgents(ctx.client);
-			headers["X-Rine-Agent"] = await resolveAgent(ctx.apiUrl, agents, p.agent as string);
+			headers["X-Rine-Agent"] = await resolveAgent(
+				ctx.apiUrl,
+				agents,
+				p.agent as string,
+			);
 		}
 		return ctx.client.get("/groups", undefined, headers);
 	},
@@ -40,7 +104,8 @@ const rineGroupCreate: ToolDef = {
 			},
 			enrollment: {
 				type: "string",
-				description: "Join policy: open (default), closed, majority, or unanimity",
+				description:
+					"Join policy: open (default), closed, majority, or unanimity",
 			},
 			visibility: {
 				type: "string",
@@ -48,26 +113,52 @@ const rineGroupCreate: ToolDef = {
 			},
 			as: {
 				type: "string",
-				description: "Acting agent name, handle, or UUID (only needed for multi-agent orgs)",
+				description:
+					"Acting agent name, handle, or UUID (only needed for multi-agent orgs)",
 			},
 		},
 		required: ["name"],
 	},
 	async handler(ctx, p) {
-		const headers: Record<string, string> = {};
-		if (p.as) {
-			const agents = await fetchAgents(ctx.client);
-			headers["X-Rine-Agent"] = await resolveAgent(ctx.apiUrl, agents, p.as as string);
-		}
+		const agents = await fetchAgents(ctx.client);
+		const agentId = await resolveAgent(
+			ctx.apiUrl,
+			agents,
+			p.as as string | undefined,
+		);
+		const headers: Record<string, string> = { "X-Rine-Agent": agentId };
+
 		const enrollment = p.enrollment ? String(p.enrollment) : undefined;
 		const visibility = p.visibility
 			? String(p.visibility)
-			: enrollment === "open" ? "public" : "private";
-		return ctx.client.post("/groups", {
-			name: String(p.name),
-			...(enrollment ? { enrollment_policy: enrollment } : {}),
-			visibility,
-		}, headers);
+			: enrollment === "open"
+				? "public"
+				: "private";
+		const group = (await ctx.client.post(
+			"/groups",
+			{
+				name: String(p.name),
+				...(enrollment ? { enrollment_policy: enrollment } : {}),
+				visibility,
+			},
+			headers,
+		)) as GroupRead;
+
+		// Best-effort MLS group init: the creator is the lowest-UUID admin of a
+		// fresh group and latches mls_group_id server-side. Non-fatal on failure
+		// (a stuck mls_pending self-clears server-side after 15 min).
+		try {
+			await initMlsGroup(ctx.configDir, agentId, group.id, ctx.client, {
+				"X-Rine-Agent": agentId,
+			});
+		} catch (e) {
+			console.warn(
+				`MLS group init failed for ${group.id} (group still created):`,
+				e,
+			);
+		}
+
+		return group;
 	},
 };
 
@@ -79,24 +170,55 @@ const rineGroupJoin: ToolDef = {
 	inputSchema: {
 		type: "object",
 		properties: {
-			group_id: { type: "string", description: "Group UUID (from rine_discover_groups or rine_groups)" },
-			message: { type: "string", description: "Optional message with join request" },
+			group_id: {
+				type: "string",
+				description: "Group UUID (from rine_discover_groups or rine_groups)",
+			},
+			message: {
+				type: "string",
+				description: "Optional message with join request",
+			},
 			as: {
 				type: "string",
-				description: "Acting agent name, handle, or UUID (only needed for multi-agent orgs)",
+				description:
+					"Acting agent name, handle, or UUID (only needed for multi-agent orgs)",
 			},
 		},
 		required: ["group_id"],
 	},
 	async handler(ctx, p) {
-		const headers: Record<string, string> = {};
-		if (p.as) {
-			const agents = await fetchAgents(ctx.client);
-			headers["X-Rine-Agent"] = await resolveAgent(ctx.apiUrl, agents, p.as as string);
-		}
+		const agents = await fetchAgents(ctx.client);
+		const agentId = await resolveAgent(
+			ctx.apiUrl,
+			agents,
+			p.as as string | undefined,
+		);
+		const headers: Record<string, string> = { "X-Rine-Agent": agentId };
+
 		const body: Record<string, string> = {};
 		if (p.message) body.message = String(p.message);
-		return ctx.client.post(`/groups/${String(p.group_id)}/join`, body, headers);
+		const result = await ctx.client.post(
+			`/groups/${String(p.group_id)}/join`,
+			body,
+			headers,
+		);
+
+		// Best-effort: install any pending MLS Welcome an admin has already
+		// delivered for this joiner (establishes local MLS state). Non-fatal —
+		// if the group is not MLS or no Welcome is pending yet, this is a no-op.
+		try {
+			await processMlsWelcomes(ctx.configDir, agentId, ctx.client);
+		} catch (e) {
+			console.warn("MLS welcome processing failed after join:", e);
+		}
+
+		// Open-enrollment fallback (Phase 6): the rine server can add a joiner to
+		// an MLS-active group with no member in the loop, so no Welcome is ever
+		// minted. If the group is MLS-active but the Welcome path installed no
+		// local state, self-join via an RFC 9420 external commit. Best-effort.
+		await externalJoinFallback(ctx, agentId, String(p.group_id));
+
+		return result;
 	},
 };
 
@@ -107,7 +229,10 @@ const rineGroupMembers: ToolDef = {
 	inputSchema: {
 		type: "object",
 		properties: {
-			group_id: { type: "string", description: "Group UUID (from rine_discover_groups or rine_groups)" },
+			group_id: {
+				type: "string",
+				description: "Group UUID (from rine_discover_groups or rine_groups)",
+			},
 		},
 		required: ["group_id"],
 	},
@@ -124,7 +249,10 @@ const rineGroupInvite: ToolDef = {
 	inputSchema: {
 		type: "object",
 		properties: {
-			group_id: { type: "string", description: "Group UUID (from rine_discover_groups or rine_groups)" },
+			group_id: {
+				type: "string",
+				description: "Group UUID (from rine_discover_groups or rine_groups)",
+			},
 			agent: {
 				type: "string",
 				description: "Agent handle (e.g. bot@acme) or UUID to invite",
@@ -132,7 +260,8 @@ const rineGroupInvite: ToolDef = {
 			message: { type: "string", description: "Optional invitation message" },
 			as: {
 				type: "string",
-				description: "Acting agent name, handle, or UUID (only needed for multi-agent orgs)",
+				description:
+					"Acting agent name, handle, or UUID (only needed for multi-agent orgs)",
 			},
 		},
 		required: ["group_id", "agent"],
@@ -141,12 +270,34 @@ const rineGroupInvite: ToolDef = {
 		const headers: Record<string, string> = {};
 		if (p.as) {
 			const agents = await fetchAgents(ctx.client);
-			headers["X-Rine-Agent"] = await resolveAgent(ctx.apiUrl, agents, p.as as string);
+			headers["X-Rine-Agent"] = await resolveAgent(
+				ctx.apiUrl,
+				agents,
+				p.as as string,
+			);
 		}
 		const agentId = await resolveToUuid(ctx.apiUrl, String(p.agent));
 		const body: Record<string, string> = { agent_id: agentId };
 		if (p.message) body.message = String(p.message);
-		return ctx.client.post(`/groups/${String(p.group_id)}/invite`, body, headers);
+		const result = await ctx.client.post(
+			`/groups/${String(p.group_id)}/invite`,
+			body,
+			headers,
+		);
+
+		// For MLS-active groups, add the invitee now (claims their KP and
+		// delivers a Welcome) so it's waiting when they accept via join.
+		// Best-effort, acting as the inviting admin.
+		await addMemberToMls(
+			ctx.client,
+			ctx.configDir,
+			ctx.apiUrl,
+			String(p.group_id),
+			agentId,
+			p.as ? String(p.as) : undefined,
+		);
+
+		return result;
 	},
 };
 

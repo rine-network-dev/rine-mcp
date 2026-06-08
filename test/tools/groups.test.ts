@@ -4,6 +4,9 @@ import type { ToolContext } from "../../src/tools/types.js";
 const mockResolveToUuid = vi.fn();
 const mockFetchAgents = vi.fn();
 const mockResolveAgent = vi.fn();
+const mockProcessMlsWelcomes = vi.fn();
+const mockLoadMlsState = vi.fn();
+const mockExternalJoinMlsGroup = vi.fn();
 
 vi.mock("@rine-network/core", async (importOriginal) => {
 	const orig = await importOriginal<typeof import("@rine-network/core")>();
@@ -12,6 +15,10 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 		resolveToUuid: (...args: unknown[]) => mockResolveToUuid(...args),
 		fetchAgents: (...args: unknown[]) => mockFetchAgents(...args),
 		resolveAgent: (...args: unknown[]) => mockResolveAgent(...args),
+		processMlsWelcomes: (...args: unknown[]) => mockProcessMlsWelcomes(...args),
+		loadMlsState: (...args: unknown[]) => mockLoadMlsState(...args),
+		externalJoinMlsGroup: (...args: unknown[]) =>
+			mockExternalJoinMlsGroup(...args),
 	};
 });
 
@@ -90,11 +97,15 @@ describe("rine_group_join", () => {
 	beforeEach(() => {
 		mockFetchAgents.mockReset();
 		mockResolveAgent.mockReset();
+		mockProcessMlsWelcomes.mockReset().mockResolvedValue(undefined);
+		mockLoadMlsState.mockReset().mockReturnValue(null);
+		mockExternalJoinMlsGroup.mockReset().mockResolvedValue({ epoch: 2 });
 	});
 
 	it("posts to correct group join path", async () => {
 		const ctx = makeCtx();
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({});
+		(ctx.client.get as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "g1" });
 		await rineGroupJoin.handler(ctx, { group_id: "g1" });
 		expect(ctx.client.post).toHaveBeenCalledWith("/groups/g1/join", {}, {});
 	});
@@ -102,6 +113,7 @@ describe("rine_group_join", () => {
 	it("includes message when provided", async () => {
 		const ctx = makeCtx();
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({});
+		(ctx.client.get as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "g1" });
 		await rineGroupJoin.handler(ctx, { group_id: "g1", message: "hello" });
 		expect(ctx.client.post).toHaveBeenCalledWith("/groups/g1/join", { message: "hello" }, {});
 	});
@@ -111,10 +123,83 @@ describe("rine_group_join", () => {
 		mockFetchAgents.mockResolvedValue([]);
 		mockResolveAgent.mockResolvedValue("agent-456");
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({});
+		(ctx.client.get as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "g1" });
 		await rineGroupJoin.handler(ctx, { group_id: "g1", as: "mybot" });
 		expect(ctx.client.post).toHaveBeenCalledWith("/groups/g1/join", {}, {
 			"X-Rine-Agent": "agent-456",
 		});
+	});
+
+	it("external-self-joins when MLS-active and the Welcome path installed no state", async () => {
+		const ctx = makeCtx();
+		mockFetchAgents.mockResolvedValue([]);
+		mockResolveAgent.mockResolvedValue("agent-self");
+		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({});
+		// MLS-active group; loadMlsState default returns null (no Welcome state).
+		(ctx.client.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+			id: "g1",
+			mls_group_id: "mls-latch",
+		});
+
+		await rineGroupJoin.handler(ctx, { group_id: "g1" });
+
+		expect(mockProcessMlsWelcomes).toHaveBeenCalledWith(
+			"/tmp/test",
+			"agent-self",
+			ctx.client,
+		);
+		expect(mockExternalJoinMlsGroup).toHaveBeenCalledWith(
+			"/tmp/test",
+			"agent-self",
+			"g1",
+			ctx.client,
+			{ "X-Rine-Agent": "agent-self" },
+		);
+	});
+
+	it("does NOT external-self-join when a Welcome already installed MLS state", async () => {
+		const ctx = makeCtx();
+		mockFetchAgents.mockResolvedValue([]);
+		mockResolveAgent.mockResolvedValue("agent-self");
+		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({});
+		(ctx.client.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+			id: "g1",
+			mls_group_id: "mls-latch",
+		});
+		mockLoadMlsState.mockReturnValue({ stateBlob: new Uint8Array(), metadata: {} });
+
+		await rineGroupJoin.handler(ctx, { group_id: "g1" });
+
+		expect(mockExternalJoinMlsGroup).not.toHaveBeenCalled();
+	});
+
+	it("does NOT external-self-join for a non-MLS (sender-key) group", async () => {
+		const ctx = makeCtx();
+		mockFetchAgents.mockResolvedValue([]);
+		mockResolveAgent.mockResolvedValue("agent-self");
+		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({});
+		(ctx.client.get as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "g1" });
+
+		await rineGroupJoin.handler(ctx, { group_id: "g1" });
+
+		expect(mockLoadMlsState).not.toHaveBeenCalled();
+		expect(mockExternalJoinMlsGroup).not.toHaveBeenCalled();
+	});
+
+	it("swallows external-self-join errors (best-effort) and still returns the join result", async () => {
+		const ctx = makeCtx();
+		mockFetchAgents.mockResolvedValue([]);
+		mockResolveAgent.mockResolvedValue("agent-self");
+		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({ joined: true });
+		(ctx.client.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+			id: "g1",
+			mls_group_id: "mls-latch",
+		});
+		mockExternalJoinMlsGroup.mockRejectedValue(new Error("epoch conflict"));
+
+		const result = await rineGroupJoin.handler(ctx, { group_id: "g1" });
+
+		expect(result).toEqual({ joined: true });
 	});
 });
 
