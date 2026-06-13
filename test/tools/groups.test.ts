@@ -7,6 +7,8 @@ const mockResolveAgent = vi.fn();
 const mockProcessMlsWelcomes = vi.fn();
 const mockLoadMlsState = vi.fn();
 const mockExternalJoinMlsGroup = vi.fn();
+const mockListMyInvites = vi.fn();
+const mockSendGroupInviteNotification = vi.fn();
 
 vi.mock("@rine-network/core", async (importOriginal) => {
 	const orig = await importOriginal<typeof import("@rine-network/core")>();
@@ -19,6 +21,9 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 		loadMlsState: (...args: unknown[]) => mockLoadMlsState(...args),
 		externalJoinMlsGroup: (...args: unknown[]) =>
 			mockExternalJoinMlsGroup(...args),
+		listMyInvites: (...args: unknown[]) => mockListMyInvites(...args),
+		sendGroupInviteNotification: (...args: unknown[]) =>
+			mockSendGroupInviteNotification(...args),
 	};
 });
 
@@ -29,6 +34,7 @@ const rineGroupJoin = groupTools.find(t => t.name === "rine_group_join")!;
 const rineGroupMembers = groupTools.find(t => t.name === "rine_group_members")!;
 const rineGroupInvite = groupTools.find(t => t.name === "rine_group_invite")!;
 const rineGroups = groupTools.find(t => t.name === "rine_groups")!;
+const rineGroupInvites = groupTools.find(t => t.name === "rine_group_invites")!;
 
 function makeCtx(): ToolContext {
 	return {
@@ -217,8 +223,9 @@ describe("rine_group_members", () => {
 describe("rine_group_invite", () => {
 	beforeEach(() => {
 		mockResolveToUuid.mockReset();
-		mockFetchAgents.mockReset();
+		mockFetchAgents.mockReset().mockResolvedValue([]);
 		mockResolveAgent.mockReset();
+		mockSendGroupInviteNotification.mockReset().mockResolvedValue(undefined);
 	});
 
 	it("resolves agent handle then posts invite", async () => {
@@ -255,7 +262,6 @@ describe("rine_group_invite", () => {
 	it("resolves acting agent and sets X-Rine-Agent header when as is provided", async () => {
 		const ctx = makeCtx();
 		mockResolveToUuid.mockResolvedValue("target-uuid");
-		mockFetchAgents.mockResolvedValue([]);
 		mockResolveAgent.mockResolvedValue("actor-789");
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({});
 
@@ -270,6 +276,101 @@ describe("rine_group_invite", () => {
 			{ agent_id: "target-uuid" },
 			{ "X-Rine-Agent": "actor-789" },
 		);
+	});
+
+	it("best-effort sends the rine.v1.group_invite notification to the invitee", async () => {
+		const ctx = makeCtx();
+		mockResolveToUuid.mockResolvedValue("invitee-uuid");
+		mockResolveAgent.mockResolvedValue("inviter-uuid");
+		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({});
+		// Group GET resolves the handle the sealed payload carries.
+		(ctx.client.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+			id: "g1",
+			handle: "#team@acme",
+		});
+
+		await rineGroupInvite.handler(ctx, {
+			group_id: "g1",
+			agent: "bot@acme",
+			message: "join us",
+		});
+
+		expect(mockSendGroupInviteNotification).toHaveBeenCalledWith(
+			ctx.client,
+			"/tmp/test",
+			"inviter-uuid",
+			"invitee-uuid",
+			{ group_id: "g1", group_handle: "#team@acme", message: "join us" },
+		);
+	});
+
+	it("passes message:null to the notification when no message is given", async () => {
+		const ctx = makeCtx();
+		mockResolveToUuid.mockResolvedValue("invitee-uuid");
+		mockResolveAgent.mockResolvedValue("inviter-uuid");
+		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({});
+		(ctx.client.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+			id: "g1",
+			handle: "#team@acme",
+		});
+
+		await rineGroupInvite.handler(ctx, { group_id: "g1", agent: "bot@acme" });
+
+		expect(mockSendGroupInviteNotification).toHaveBeenCalledWith(
+			ctx.client,
+			"/tmp/test",
+			"inviter-uuid",
+			"invitee-uuid",
+			{ group_id: "g1", group_handle: "#team@acme", message: null },
+		);
+	});
+
+	it("swallows notification errors (best-effort) and still returns the invite voucher", async () => {
+		const ctx = makeCtx();
+		mockResolveToUuid.mockResolvedValue("invitee-uuid");
+		mockResolveAgent.mockResolvedValue("inviter-uuid");
+		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "req-1" });
+		(ctx.client.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+			id: "g1",
+			handle: "#team@acme",
+		});
+		mockSendGroupInviteNotification.mockRejectedValue(new Error("groups_only 403"));
+
+		const result = await rineGroupInvite.handler(ctx, { group_id: "g1", agent: "bot@acme" });
+
+		expect(result).toEqual({ id: "req-1" });
+	});
+});
+
+describe("rine_group_invites", () => {
+	beforeEach(() => {
+		mockFetchAgents.mockReset().mockResolvedValue([]);
+		mockResolveAgent.mockReset();
+		mockListMyInvites.mockReset();
+	});
+
+	it("lists invites without agent header when no agent specified", async () => {
+		const ctx = makeCtx();
+		const items = [{ id: "req-1", group_id: "g1", group_handle: "#team@acme" }];
+		mockListMyInvites.mockResolvedValue(items);
+
+		const result = await rineGroupInvites.handler(ctx, {});
+
+		expect(mockListMyInvites).toHaveBeenCalledWith(ctx.client, {});
+		expect(result).toEqual({ items });
+	});
+
+	it("resolves agent and passes X-Rine-Agent header when agent specified", async () => {
+		const ctx = makeCtx();
+		mockResolveAgent.mockResolvedValue("resolved-id");
+		mockListMyInvites.mockResolvedValue([]);
+
+		await rineGroupInvites.handler(ctx, { agent: "mybot" });
+
+		expect(mockResolveAgent).toHaveBeenCalledWith("https://api.test", [], "mybot");
+		expect(mockListMyInvites).toHaveBeenCalledWith(ctx.client, {
+			"X-Rine-Agent": "resolved-id",
+		});
 	});
 });
 

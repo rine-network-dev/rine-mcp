@@ -5,10 +5,12 @@ import {
 	externalJoinMlsGroup,
 	fetchAgents,
 	initMlsGroup,
+	listMyInvites,
 	loadMlsState,
 	processMlsWelcomes,
 	resolveAgent,
 	resolveToUuid,
+	sendGroupInviteNotification,
 } from "@rine-network/core";
 import type { ToolContext, ToolDef } from "./types.js";
 
@@ -34,6 +36,37 @@ async function addMemberToMls(
 		});
 	} catch (e) {
 		console.warn(`MLS add-member failed for group ${groupId}:`, e);
+	}
+}
+
+// Best-effort: seal a `rine.v1.group_invite` notification to the invitee so the
+// invite lands in their normal inbox/poll/SSE path. Fetches the group handle for
+// the sealed payload and sends as the inviting agent. The authoritative discovery
+// path is `GET /groups/invites` — this is only a convenience nudge, so a failure
+// (e.g. groups_only 403, missing keys) warns but never fails the invite. Mirrors
+// the surface's other best-effort MLS error handling.
+async function notifyInvitee(
+	client: HttpClient,
+	configDir: string,
+	apiUrl: string,
+	groupId: string,
+	inviteeAgentId: string,
+	message: string | null,
+	as?: string,
+): Promise<void> {
+	try {
+		const group = (await client.get(`/groups/${groupId}`)) as GroupRead;
+		const agents = await fetchAgents(client);
+		const inviterId = await resolveAgent(apiUrl, agents, as);
+		await sendGroupInviteNotification(
+			client,
+			configDir,
+			inviterId,
+			inviteeAgentId,
+			{ group_id: groupId, group_handle: group.handle, message },
+		);
+	} catch (e) {
+		console.warn(`Invite notification failed for group ${groupId}:`, e);
 	}
 }
 
@@ -297,7 +330,51 @@ const rineGroupInvite: ToolDef = {
 			p.as ? String(p.as) : undefined,
 		);
 
+		// Best-effort: nudge the invitee with a sealed `rine.v1.group_invite`
+		// notification so it surfaces in their inbox. Authoritative discovery is
+		// `rine_group_invites` (GET /groups/invites); a failure here is non-fatal.
+		await notifyInvitee(
+			ctx.client,
+			ctx.configDir,
+			ctx.apiUrl,
+			String(p.group_id),
+			agentId,
+			p.message ? String(p.message) : null,
+			p.as ? String(p.as) : undefined,
+		);
+
 		return result;
+	},
+};
+
+const rineGroupInvites: ToolDef = {
+	name: "rine_group_invites",
+	description:
+		"List group invites addressed to your agent. " +
+		"Each invite shows the group, who invited you, and any message — " +
+		"join with rine_group_join using the group_id.",
+	inputSchema: {
+		type: "object",
+		properties: {
+			agent: {
+				type: "string",
+				description:
+					"Agent name, handle, or UUID (only needed for multi-agent orgs)",
+			},
+		},
+	},
+	async handler(ctx, p) {
+		const headers: Record<string, string> = {};
+		if (p.agent) {
+			const agents = await fetchAgents(ctx.client);
+			headers["X-Rine-Agent"] = await resolveAgent(
+				ctx.apiUrl,
+				agents,
+				p.agent as string,
+			);
+		}
+		const items = await listMyInvites(ctx.client, headers);
+		return { items };
 	},
 };
 
@@ -307,4 +384,5 @@ export const groupTools: ToolDef[] = [
 	rineGroupJoin,
 	rineGroupMembers,
 	rineGroupInvite,
+	rineGroupInvites,
 ];
