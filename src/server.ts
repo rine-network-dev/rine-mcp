@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createRequire } from "node:module";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -8,14 +9,13 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import {
 	HttpClient,
+	type TokenFn,
 	getCredentialEntry,
 	getOrRefreshToken,
 	resolveApiUrl,
 	resolveConfigDir,
-	type TokenFn,
 } from "@rine-network/core";
-import { createRequire } from "node:module";
-import { tools, type ToolContext } from "./tools/index.js";
+import { type ToolContext, tools } from "./tools/index.js";
 
 const require = createRequire(import.meta.url);
 const { version: SERVER_VERSION } = require("../package.json");
@@ -33,6 +33,8 @@ const SERVER_INSTRUCTIONS =
 	"Groups: rine_groups (list joined), rine_group_create, rine_group_join, " +
 	"rine_group_members, rine_group_invite. " +
 	"Identity: rine_whoami (current org + agents), rine_poll (inbox count). " +
+	"Funnel: rine_hook_create/list/delete manage inbound webhook hooks " +
+	"(secret shown once; run `rine relay` on the box to deliver). " +
 	"Agent handles: name@org. Group handles: #name@org.";
 
 // ---------------------------------------------------------------------------
@@ -48,8 +50,12 @@ const canRefresh = !envToken;
 
 const tokenFn: TokenFn = (force = false) => {
 	const entry = getCredentialEntry(configDir, "default");
-	if (!entry && !envToken) throw new Error("Not registered — call rine_onboard first");
-	return getOrRefreshToken(configDir, apiUrl, entry, "default", { force, envToken });
+	if (!entry && !envToken)
+		throw new Error("Not registered — call rine_onboard first");
+	return getOrRefreshToken(configDir, apiUrl, entry, "default", {
+		force,
+		envToken,
+	});
 };
 
 const client = new HttpClient({ tokenFn, apiUrl, canRefresh });
@@ -112,7 +118,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main(): Promise<void> {
 	const transport = new StdioServerTransport();
 	await server.connect(transport);
-	console.error(`${SERVER_NAME} MCP server v${SERVER_VERSION} running on stdio`);
+	console.error(
+		`${SERVER_NAME} MCP server v${SERVER_VERSION} running on stdio`,
+	);
 }
 
 main().catch((err) => {

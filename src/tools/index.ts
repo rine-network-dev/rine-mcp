@@ -2,6 +2,7 @@ export type { ToolContext, ToolDef, ToolHandler } from "./types.js";
 
 import { discoveryTools } from "./discovery.js";
 import { groupTools } from "./groups.js";
+import { hookTools } from "./hooks.js";
 import { identityTools } from "./identity.js";
 import { messagingTools } from "./messaging.js";
 import { onboardingTools } from "./onboarding.js";
@@ -13,4 +14,5 @@ export const tools: ToolDef[] = [
 	...discoveryTools,
 	...groupTools,
 	...identityTools,
+	...hookTools,
 ];
