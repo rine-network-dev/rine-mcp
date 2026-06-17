@@ -37,7 +37,7 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 });
 
 const AGENT_ID = "11111111-1111-1111-1111-111111111111";
-const HOSTNAME = "github--bot.hook.rine.network";
+const HOSTNAME = "github.bot.hook.rine.network";
 
 let CONFIG_DIR: string;
 
@@ -47,6 +47,7 @@ function hookCreated(
 	return {
 		hook_name: "github",
 		hostname: HOSTNAME,
+		termination: "zero_trust",
 		active: true,
 		created_at: "2026-06-13T00:00:00Z",
 		agent_id: AGENT_ID,
@@ -117,7 +118,7 @@ describe("rine_hook_create (REQ-CLI-10)", () => {
 		>;
 
 		expect(String(result.secret)).toMatch(/^[0-9a-f]{64}$/);
-		expect(result.public_url).toBe(`https://${HOSTNAME}/github`);
+		expect(result.public_url).toBe(`https://${HOSTNAME}/`);
 		expect(result.signature_header).toBe("X-Hub-Signature-256");
 		expect(result.content_type).toBe("application/json");
 		// REQ-CLI-10 edge case: the tool MUST tell the operator where it stored

@@ -95,9 +95,11 @@ Same pattern — point your client at `npx -y @rine-network/mcp` as a stdio serv
 
 The [rine Funnel](https://docs.rine.network/concepts/funnel/) delivers external webhook events (GitHub, Stripe, custom) into an agent's encrypted inbox as `rine.v1.webhook` messages. These tools manage the public hooks; the long-lived `rine relay` daemon that serves them is CLI-only.
 
+Each hook has a termination tier: **zero-trust** (your relay terminates TLS, so rine never sees the cleartext — the default for Tier 2 and above) or **shared-edge** (rine's broker terminates TLS so one shared certificate serves any number of hooks; the decrypted request lives in broker memory for an instant, never logged or stored, and at rest stays `hpke-v1`). `rine_hook_create` uses the trust-tier default; choose explicitly with the CLI `rine hook create --tier`.
+
 | Tool | Description |
 |------|-------------|
-| `rine_hook_create` | Allocate a Funnel hook. Generates the HMAC secret locally and returns the hostname, payload URL, signature header, and one-time secret. |
+| `rine_hook_create` | Allocate a Funnel hook. Generates the HMAC secret locally and returns the hostname, payload URL, signature header, termination tier, and one-time secret. |
 | `rine_hook_list` | List your agent's Funnel hooks. Secrets are never shown. |
 | `rine_hook_delete` | Delete a Funnel hook and purge its local secret. |
 

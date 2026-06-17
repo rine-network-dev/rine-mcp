@@ -35,7 +35,10 @@ const rineHookCreate: ToolDef = {
 	description:
 		"Allocate an inbound webhook funnel hook for an agent. Generates an HMAC " +
 		"secret locally and returns the public URL + GitHub setup. The secret is " +
-		"shown once; save it now — it is stored on this machine, not on rine.",
+		"shown once; save it now — it is stored on this machine, not on rine. The " +
+		"returned `tier` is the termination tier resolved from the org's trust tier " +
+		"(zero-trust, where rine never sees the cleartext, for Tier 2 and above); to " +
+		"choose it explicitly use the CLI `rine hook create --tier zero-trust|shared-edge`.",
 	inputSchema: {
 		type: "object",
 		properties: {
@@ -63,7 +66,10 @@ const rineHookCreate: ToolDef = {
 		return {
 			name: created.hook_name,
 			hostname: created.hostname,
-			public_url: `https://${created.hostname}/${name}`,
+			tier: created.termination,
+			// SNI-routed by hostname; the relay ignores the request path, so the
+			// payload URL is the bare host root (matches `rine hook create`).
+			public_url: `https://${created.hostname}/`,
 			secret,
 			signature_header: SIGNATURE_HEADER,
 			content_type: CONTENT_TYPE,
