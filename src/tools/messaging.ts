@@ -2,16 +2,18 @@ import type {
 	GroupRead,
 	MessageRead,
 	PaginatedResponse,
+	ThreadRow,
 } from "@rine-network/core";
 import {
 	agentKeysExist,
 	decryptGroupMessage,
+	decryptGroupMessageWithRecovery,
 	decryptMessage,
+	decryptThreadRow,
 	encryptGroupMessage,
 	encryptMessage,
 	encryptMlsGroupMessage,
 	fetchAgents,
-	fetchAndIngestPendingSKDistributions,
 	fetchRecipientKeys,
 	getOrCreateSenderKey,
 	ingestSenderKeyDistribution,
@@ -360,50 +362,18 @@ const rineRead: ToolDef = {
 					msg.encryption_version === "mls-v1") &&
 				msg.group_id
 			) {
-				try {
-					const result = await decryptGroupMessage(
-						ctx.configDir,
-						agentId,
-						msg.group_id,
-						msg.encrypted_payload,
-						ctx.client,
-					);
-					return {
-						...msg,
-						decrypted: JSON.parse(result.plaintext),
-						verified: result.verified,
-					};
-				} catch (err) {
-					const match =
-						err instanceof Error &&
-						err.message.match(/^unknown sender key id: (.+)$/);
-					if (match) {
-						const ingested = await fetchAndIngestPendingSKDistributions(
-							ctx.client,
-							ctx.configDir,
-							agentId,
-							match[1],
-						);
-						if (ingested > 0) {
-							try {
-								const result = await decryptGroupMessage(
-									ctx.configDir,
-									agentId,
-									msg.group_id,
-									msg.encrypted_payload,
-									ctx.client,
-								);
-								return {
-									...msg,
-									decrypted: JSON.parse(result.plaintext),
-									verified: result.verified,
-								};
-							} catch {
-								/* retry exhausted */
-							}
-						}
-					}
-				}
+				const result = await decryptGroupMessageWithRecovery(
+					ctx.client,
+					ctx.configDir,
+					agentId,
+					msg.group_id,
+					msg.encrypted_payload,
+				);
+				return {
+					...msg,
+					decrypted: JSON.parse(result.plaintext),
+					verified: result.verified,
+				};
 			}
 		} catch {
 			// Return raw if HPKE decryption fails
@@ -481,9 +451,64 @@ const rineReply: ToolDef = {
 	},
 };
 
+const rineThread: ToolDef = {
+	name: "rine_thread",
+	description:
+		"Fetch the both-sided, decrypted transcript of a conversation by its ID. " +
+		"Returns every turn (yours and the peer's) ordered oldest→newest, each tagged " +
+		"`direction` (sent/received), with the decrypted `text` and signature `verification_status`. " +
+		"A turn the caller cannot decrypt (or whose signature is invalid) renders `text: \"[unavailable]\"`. " +
+		"Use this to recover the full context of a conversation on demand.",
+	inputSchema: {
+		type: "object",
+		properties: {
+			conversation_id: {
+				type: "string",
+				description: "Conversation UUID to fetch the transcript of",
+			},
+			agent: {
+				type: "string",
+				description:
+					"Agent name, handle, or UUID (only needed for multi-agent orgs)",
+			},
+			limit: {
+				type: "number",
+				description: "Max turns to return (most-recent window)",
+			},
+		},
+		required: ["conversation_id"],
+	},
+	async handler(ctx, p) {
+		const agents = await fetchAgents(ctx.client);
+		const agentId = await resolveAgent(
+			ctx.apiUrl,
+			agents,
+			p.agent as string | undefined,
+		);
+
+		const params: Record<string, string | number> = {};
+		if (p.limit) params.limit = Number(p.limit);
+
+		const data = (await ctx.client.get(
+			`/conversations/${String(p.conversation_id)}/messages`,
+			params,
+			{ "X-Rine-Agent": agentId },
+		)) as { messages: ThreadRow[]; truncated?: boolean };
+
+		const messages = await Promise.all(
+			(data.messages ?? []).map((row) =>
+				decryptThreadRow(ctx.configDir, agentId, row, ctx.client),
+			),
+		);
+
+		return { messages, truncated: data.truncated ?? false };
+	},
+};
+
 export const messagingTools: ToolDef[] = [
 	rineSend,
 	rineInbox,
 	rineRead,
 	rineReply,
+	rineThread,
 ];

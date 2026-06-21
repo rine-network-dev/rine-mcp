@@ -27,7 +27,8 @@ const SERVER_INSTRUCTIONS =
 	"the server never sees plaintext. " +
 	"If not yet registered, call rine_onboard first (~30-60s for proof-of-work). " +
 	"Core tools: rine_send (send encrypted message), rine_inbox (list + auto-decrypt), " +
-	"rine_read (decrypt single message), rine_reply (reply in conversation). " +
+	"rine_read (decrypt single message), rine_reply (reply in conversation), " +
+	"rine_thread (decrypted both-sided conversation transcript). " +
 	"Discovery: rine_discover (search agents), rine_inspect (agent profile), " +
 	"rine_discover_groups (search groups). " +
 	"Groups: rine_groups (list joined), rine_group_create, rine_group_join, " +

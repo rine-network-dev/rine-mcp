@@ -57,6 +57,7 @@ const rineSend = messagingTools.find((t) => t.name === "rine_send")!;
 const rineInbox = messagingTools.find((t) => t.name === "rine_inbox")!;
 const rineRead = messagingTools.find((t) => t.name === "rine_read")!;
 const rineReply = messagingTools.find((t) => t.name === "rine_reply")!;
+const rineThread = messagingTools.find((t) => t.name === "rine_thread")!;
 
 function makeCtx(): ToolContext {
 	return {
@@ -526,5 +527,98 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 
 		expect(out.decrypted).toEqual(payload);
 		expect(out.verified).toBe(true);
+	});
+
+	// T-MCP-1 — rine_thread returns both-sided ThreadEntry rows, resolving the
+	// acting agent, and surfaces [unavailable] for an undecryptable row.
+	it("rine_thread returns both-sided decrypted rows and [unavailable] for an undecryptable one", async () => {
+		const ctx = makeRealCtx();
+		// Turn 1: RECIPIENT (us) SENT to the peer → we read our self-blob.
+		const sent = await realEncryptMessage(
+			dir,
+			RECIPIENT_ID,
+			senderKeys.encryption.publicKey,
+			{ text: "my question" },
+			senderKeys.pqEncryption!.publicKey,
+		);
+		// Turn 2: the peer (SENDER) RECEIVED-side reply to us, sealed to our key.
+		const received = await realEncryptMessage(
+			dir,
+			SENDER_ID,
+			recipientKeys.encryption.publicKey,
+			{ text: "their answer" },
+			recipientKeys.pqEncryption!.publicKey,
+		);
+
+		const page = {
+			messages: [
+				{
+					id: "t1",
+					type: "rine.v1.task_request",
+					direction: "sent",
+					sender_handle: "me@org",
+					encryption_version: sent.encryption_version,
+					encrypted_payload: sent.encrypted_payload,
+					self_encrypted_payload: sent.self_encrypted_payload,
+					created_at: "2026-06-20T00:00:00Z",
+				},
+				{
+					id: "t2",
+					type: "rine.v1.task_response",
+					direction: "received",
+					sender_handle: "alice@org",
+					encryption_version: received.encryption_version,
+					encrypted_payload: received.encrypted_payload,
+					created_at: "2026-06-20T00:00:01Z",
+				},
+				{
+					id: "t3",
+					type: "rine.v1.dm",
+					direction: "received",
+					sender_handle: "alice@org",
+					encryption_version: "hpke-v1",
+					encrypted_payload: "AAAA",
+					created_at: "2026-06-20T00:00:02Z",
+				},
+			],
+			truncated: false,
+		};
+
+		mockFetchAgents.mockResolvedValue([
+			{ id: RECIPIENT_ID, handle: "me@org.rine.network" },
+		]);
+		mockResolveAgent.mockResolvedValue(RECIPIENT_ID);
+		(ctx.client.get as ReturnType<typeof vi.fn>).mockImplementation(
+			(path: string) => {
+				if (path === `/conversations/conv-1/messages`) {
+					return Promise.resolve(page);
+				}
+				// Signature verification fetches the signer's pubkeys: the sent turn was
+				// signed by us (RECIPIENT_ID), the received turn by the peer (SENDER_ID).
+				if (path.includes(RECIPIENT_ID)) {
+					return Promise.resolve(keysResponse(RECIPIENT_ID, recipientKeys));
+				}
+				return Promise.resolve(keysResponse(SENDER_ID, senderKeys));
+			},
+		);
+
+		const out = (await rineThread.handler(ctx, {
+			conversation_id: "conv-1",
+		})) as {
+			messages: Array<Record<string, unknown>>;
+			truncated: boolean;
+		};
+
+		expect(mockResolveAgent).toHaveBeenCalled();
+		expect(out.messages).toHaveLength(3);
+		expect(out.messages[0]!.direction).toBe("sent");
+		expect(out.messages[0]!.text).toBe("my question");
+		expect(out.messages[1]!.direction).toBe("received");
+		expect(out.messages[1]!.text).toBe("their answer");
+		// Undecryptable row fails closed.
+		expect(out.messages[2]!.text).toBe("[unavailable]");
+		// No raw ciphertext field on the returned rows.
+		expect(out.messages[0]!.encrypted_payload).toBeUndefined();
+		expect(out.messages[0]!.self_encrypted_payload).toBeUndefined();
 	});
 });
