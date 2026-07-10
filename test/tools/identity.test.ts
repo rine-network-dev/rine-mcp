@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { SpiffeVerificationError } from "@rine-network/core";
 import type { ToolContext } from "../../src/tools/types.js";
 
 const mockAgentKeysExist = vi.fn();
@@ -17,6 +18,7 @@ const { identityTools } = await import("../../src/tools/identity.js");
 
 const rineWhoami = identityTools.find(t => t.name === "rine_whoami")!;
 const rinePoll = identityTools.find(t => t.name === "rine_poll")!;
+const rineVerifyIdentity = identityTools.find(t => t.name === "rine_verify_identity")!;
 
 function makeCtx(): ToolContext {
 	return {
@@ -91,5 +93,50 @@ describe("rine_poll", () => {
 		}));
 
 		await expect(rinePoll.handler(ctx, {})).rejects.toThrow("Poll failed: 401");
+	});
+});
+
+describe("rine_verify_identity", () => {
+	beforeEach(() => {
+		// Falsy value → hasSpiffeEndpoint() is false, exercising the no-endpoint path.
+		vi.stubEnv("SPIFFE_ENDPOINT_SOCKET", "");
+	});
+
+	afterAll(() => {
+		vi.unstubAllEnvs();
+	});
+
+	it("posts a challenge then verify with the supplied svid and returns the result", async () => {
+		const ctx = makeCtx();
+		const verified = {
+			agent_id: "a1",
+			spiffe_id: "spiffe://acme.example/workload",
+			trust_domain: "acme.example",
+			trust_tier: 2,
+			verified_at: "2026-07-10T00:00:00Z",
+		};
+		(ctx.client.post as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({ audience: "spiffe://challenge.rine.network/tok", expires_in: 300 })
+			.mockResolvedValueOnce(verified);
+
+		const result = await rineVerifyIdentity.handler(ctx, { agent_id: "a1", svid: "jwt.svid.here" });
+
+		expect(result).toEqual(verified);
+		const post = ctx.client.post as ReturnType<typeof vi.fn>;
+		expect(post).toHaveBeenNthCalledWith(1, "/agents/a1/verify-svid/challenge");
+		expect(post).toHaveBeenNthCalledWith(2, "/agents/a1/verify-svid", { svid: "jwt.svid.here" });
+	});
+
+	it("throws (never a silent no-op) when no svid and no SPIFFE endpoint", async () => {
+		const ctx = makeCtx();
+		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+			audience: "spiffe://challenge.rine.network/tok",
+			expires_in: 300,
+		});
+
+		await expect(rineVerifyIdentity.handler(ctx, { agent_id: "a1" })).rejects.toThrow(
+			SpiffeVerificationError,
+		);
+		expect(ctx.client.post).toHaveBeenCalledTimes(1);
 	});
 });

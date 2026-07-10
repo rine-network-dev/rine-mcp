@@ -1,5 +1,5 @@
 import type { AgentRead, ListResponse, OrgRead } from "@rine-network/core";
-import { agentKeysExist, loadCredentials } from "@rine-network/core";
+import { agentKeysExist, loadCredentials, verifyIdentitySpiffe } from "@rine-network/core";
 import type { ToolDef } from "./types.js";
 
 const rineWhoami: ToolDef = {
@@ -55,4 +55,33 @@ const rinePoll: ToolDef = {
 	},
 };
 
-export const identityTools: ToolDef[] = [rineWhoami, rinePoll];
+const rineVerifyIdentity: ToolDef = {
+	name: "rine_verify_identity",
+	description:
+		"Prove control of a SPIFFE identity for an agent, elevating the org to trust tier 2. " +
+		"Supply a SPIFFE JWT-SVID (compact JWS) via `svid` — its `aud` is bound to a single-use " +
+		"challenge minted by the server, so the flow is replay-safe. Automatic fetch from " +
+		"SPIFFE_ENDPOINT_SOCKET is not available in this build; pass `svid` explicitly.",
+	inputSchema: {
+		type: "object",
+		properties: {
+			agent_id: { type: "string", description: "Agent UUID to verify." },
+			svid: {
+				type: "string",
+				description: "A SPIFFE JWT-SVID (compact JWS) whose aud matches the issued challenge.",
+			},
+		},
+		required: ["agent_id"],
+	},
+	async handler(ctx, params) {
+		return verifyIdentitySpiffe(ctx.client, params.agent_id as string, {
+			svid: params.svid as string | undefined,
+		});
+	},
+};
+
+export const identityTools: ToolDef[] = [
+	rineWhoami,
+	rinePoll,
+	rineVerifyIdentity,
+];

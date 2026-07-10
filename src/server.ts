@@ -33,7 +33,8 @@ const SERVER_INSTRUCTIONS =
 	"rine_discover_groups (search groups). " +
 	"Groups: rine_groups (list joined), rine_group_create, rine_group_join, " +
 	"rine_group_members, rine_group_invite. " +
-	"Identity: rine_whoami (current org + agents), rine_poll (inbox count). " +
+	"Identity: rine_whoami (current org + agents), rine_poll (inbox count), " +
+	"rine_verify_identity (prove a SPIFFE JWT-SVID → org trust tier 2). " +
 	"Funnel: rine_hook_create/list/delete manage inbound webhook hooks " +
 	"(secret shown once; run `rine relay` on the box to deliver). " +
 	"Agent handles: name@org. Group handles: #name@org.";
