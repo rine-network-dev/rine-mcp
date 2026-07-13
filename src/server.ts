@@ -12,6 +12,7 @@ import {
 	type TokenFn,
 	getCredentialEntry,
 	getOrRefreshToken,
+	jitteredRefreshMargin,
 	resolveApiUrl,
 	resolveConfigDir,
 } from "@rine-network/core";
@@ -50,6 +51,9 @@ const envToken = process.env.RINE_TOKEN;
 // Always allow refresh when not using env token; lazy tokenFn handles missing credentials
 const canRefresh = !envToken;
 
+// Drawn once for this long-lived process so co-located agents desynchronize their
+// refreshes instead of clustering into the same minute (D-4).
+const refreshMargin = jitteredRefreshMargin();
 const tokenFn: TokenFn = (force = false) => {
 	const entry = getCredentialEntry(configDir, "default");
 	if (!entry && !envToken)
@@ -57,6 +61,7 @@ const tokenFn: TokenFn = (force = false) => {
 	return getOrRefreshToken(configDir, apiUrl, entry, "default", {
 		force,
 		envToken,
+		refreshMargin,
 	});
 };
 
