@@ -6,6 +6,7 @@ import { hookTools } from "./hooks.js";
 import { identityTools } from "./identity.js";
 import { messagingTools } from "./messaging.js";
 import { onboardingTools } from "./onboarding.js";
+import { paymentTools } from "./payments.js";
 import type { ToolDef } from "./types.js";
 
 export const tools: ToolDef[] = [
@@ -15,4 +16,5 @@ export const tools: ToolDef[] = [
 	...groupTools,
 	...identityTools,
 	...hookTools,
+	...paymentTools,
 ];

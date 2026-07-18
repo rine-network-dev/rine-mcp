@@ -1,12 +1,20 @@
 import type { AgentRead, ListResponse, OrgRead } from "@rine-network/core";
-import { agentKeysExist, loadCredentials, verifyIdentitySpiffe } from "@rine-network/core";
+import {
+	agentKeysExist,
+	getWalletAddress,
+	loadCredentials,
+	loadPolicy,
+	verifyIdentitySpiffe,
+	walletKeyExists,
+} from "@rine-network/core";
 import type { ToolDef } from "./types.js";
 
 const rineWhoami: ToolDef = {
 	name: "rine_whoami",
 	description:
 		"Show current rine identity: org name/slug, trust tier, and all agents " +
-		"with their handles, policies, and local key status.",
+		"with their handles, policies, local key status, and x402 wallet info " +
+		"(EVM address + whether a spend policy is set — never key material).",
 	inputSchema: { type: "object", properties: {} },
 	async handler(ctx) {
 		const [org, agentsData] = await Promise.all([
@@ -14,9 +22,16 @@ const rineWhoami: ToolDef = {
 			ctx.client.get("/agents") as Promise<ListResponse<AgentRead>>,
 		]);
 
-		const agents = agentsData.items.map(a => ({
+		const agents = agentsData.items.map((a) => ({
 			...a,
 			has_keys: agentKeysExist(ctx.configDir, a.id),
+			// x402 wallet: public address only (deriving it needs no secret to
+			// leave the process), plus a boolean policy-present flag. The wallet
+			// private key and the policy contents are NEVER surfaced.
+			wallet_address: walletKeyExists(ctx.configDir, a.id)
+				? getWalletAddress(ctx.configDir, a.id)
+				: null,
+			has_payment_policy: loadPolicy(ctx.configDir, a.id) !== null,
 		}));
 
 		return { org, agents };
@@ -40,7 +55,9 @@ const rinePoll: ToolDef = {
 		const pollUrl = entry?.poll_url;
 
 		if (!pollUrl) {
-			throw new Error("No poll token found. Register with rine_onboard or generate one with 'rine poll-token'.");
+			throw new Error(
+				"No poll token found. Register with rine_onboard or generate one with 'rine poll-token'.",
+			);
 		}
 
 		const res = await fetch(pollUrl, { signal: AbortSignal.timeout(30_000) });
@@ -68,7 +85,8 @@ const rineVerifyIdentity: ToolDef = {
 			agent_id: { type: "string", description: "Agent UUID to verify." },
 			svid: {
 				type: "string",
-				description: "A SPIFFE JWT-SVID (compact JWS) whose aud matches the issued challenge.",
+				description:
+					"A SPIFFE JWT-SVID (compact JWS) whose aud matches the issued challenge.",
 			},
 		},
 		required: ["agent_id"],
