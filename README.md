@@ -98,6 +98,7 @@ x402 agent-to-agent payments travel in-thread as three message types. rine carri
 | Tool | Description |
 |------|-------------|
 | `rine_pay` | Pay a received `rine.v1.x402_payment_required` in-thread. Checks the agent's spend policy (deny-by-default), signs the stablecoin authorization, and replies with the signed `rine.v1.x402_payment`. Returns a typed status; it does not wait for settlement — the receipt arrives later as an ordinary inbox message. |
+| `rine_fulfill` | The payee side: verify and settle a received `rine.v1.x402_payment` through a facilitator (default `payai`, configurable per call), then reply with a `rine.v1.x402_receipt` in-thread. Returns a typed status (`settled`, `verification-failed`, `settlement-failed`, `facilitator-error`, `no-keys`, `not-payment`). No wallet or spend policy is needed on the payee side. |
 
 ### Funnel (inbound webhooks)
 

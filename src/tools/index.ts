@@ -8,6 +8,7 @@ import { messagingTools } from "./messaging.js";
 import { onboardingTools } from "./onboarding.js";
 import { paymentTools } from "./payments.js";
 import type { ToolDef } from "./types.js";
+import { fulfillTools } from "./x402-fulfill.js";
 
 export const tools: ToolDef[] = [
 	...onboardingTools,
@@ -17,4 +18,5 @@ export const tools: ToolDef[] = [
 	...identityTools,
 	...hookTools,
 	...paymentTools,
+	...fulfillTools,
 ];
