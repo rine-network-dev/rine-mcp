@@ -1,4 +1,4 @@
-// REQ-M03 — MCP x402 payment tool: rine_pay. Request/response-shaped (NO
+// MCP x402 payment tool: rine_pay. Request/response-shaped (NO
 // long-running watcher — a settlement watcher would hang the stdio transport,
 // same rule as the relay in hooks.ts). rine_pay consumes a RECEIVED
 // `rine.v1.x402_payment_required`, applies the wallet + spend policy via
@@ -73,7 +73,9 @@ const rinePay: ToolDef = {
 		"in-thread. Decrypts the quote, selects an acceptable requirement under " +
 		"the agent's local spend policy (deny-by-default), signs an EIP-3009 " +
 		"stablecoin authorization with the agent's wallet, and sends the signed " +
-		"rine.v1.x402_payment back in the same conversation. The spend is reserved " +
+		"rine.v1.x402_payment back in the same conversation, stamping the quote's " +
+		"message-id into the signed payload so the payee can bind settlement to this " +
+		"exact quote. The spend is reserved " +
 		"under a cross-process lock as the last act before the send (fail-closed: " +
 		"the debit stands even if the send then fails, and there is no refund). " +
 		"Returns a typed `status` — `payment-submitted` on success, or `no-wallet` / " +
@@ -195,7 +197,13 @@ const rinePay: ToolDef = {
 		}
 
 		const walletKey = loadWalletKey(ctx.configDir, agentId);
-		const payment = buildPaymentPayload(pr, requirement, walletKey);
+		// Stamp the answered quote's message-id into the SIGNED payload so the
+		// payee can bind this payment to the ONE quote it authored (never the
+		// payer-echoed terms). `messageId` IS that quote's id — this tool pays a
+		// specific received rine.v1.x402_payment_required.
+		const payment = buildPaymentPayload(pr, requirement, walletKey, {
+			quoteMessageId: messageId,
+		});
 		const built = buildPaymentMessage(payment, {
 			emitMarker: p.emit_marker !== false,
 		});

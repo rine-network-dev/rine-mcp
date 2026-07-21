@@ -28,9 +28,8 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 	};
 });
 
-const { createWallet, savePolicy, readDailySpent } = await import(
-	"@rine-network/core"
-);
+const { createWallet, savePolicy, readDailySpent, X402_QUOTE_REF_KEY } =
+	await import("@rine-network/core");
 const { paymentTools } = await import("../../src/tools/payments.js");
 
 const rinePay = paymentTools.find((t) => t.name === "rine_pay")!;
@@ -189,6 +188,22 @@ describe("rine_pay — happy path (REQ-M03)", () => {
 		expect(signed.payload.signature).toMatch(/^0x[0-9a-f]{130}$/);
 		expect(signed.payload.authorization.to).toBe(PAY_TO);
 		expect(signed.payload.authorization.value).toBe("100000");
+	});
+
+	it("stamps the answered quote's message-id into the signed payload (R-1)", async () => {
+		const ctx = makeCtx();
+		createWallet(CONFIG_DIR, PAYER_ID);
+		savePolicy(CONFIG_DIR, PAYER_ID, policy());
+		primePayable(ctx, quotePayload());
+
+		await rinePay.handler(ctx, { message_id: QUOTE_ID });
+
+		// The payee binds settlement to THIS quote via the signed, E2EE extensions;
+		// the ref is the quote message id this tool paid (never a bare string literal).
+		const signed = mockEncryptMessage.mock.calls[0]![3] as {
+			extensions: Record<string, unknown>;
+		};
+		expect(signed.extensions[X402_QUOTE_REF_KEY]).toBe(QUOTE_ID);
 	});
 
 	it("records the spend locally after a successful send", async () => {
