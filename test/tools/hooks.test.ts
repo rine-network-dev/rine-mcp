@@ -1,4 +1,4 @@
-// REQ-CLI-10/11 — MCP funnel management tools in `rine-mcp/src/tools/hooks.ts`:
+// MCP funnel management tools in `rine-mcp/src/tools/hooks.ts`:
 //   rine_hook_create / rine_hook_list / rine_hook_delete  (thin wrappers cloned
 //   from rine_groups for the X-Rine-Agent resolution pattern), plus the optional
 //   read-only rine_funnel_status. The relay is NEVER an MCP tool (a never-
@@ -11,11 +11,11 @@
 //    be pointed there). The secret appears in create output ONLY, never in list.
 //  - No rine_relay / rine_funnel / rine_tunnel EXECUTION tool is registered.
 //  - rine_funnel_status (if shipped) returns hostnames + active only (live flag
-//    deferred per ratified decision #4).
+//    deferred per a ratified decision).
 //  - HOOK_DNS_API_TOKEN never appears in this surface (server-side only).
 //
 // All externals are MOCKED (the @rine-network/core boundary + node:fs). The tool
-// module `../../src/tools/hooks.js` does NOT exist yet (Track E creates it);
+// module `../../src/tools/hooks.js` does NOT exist yet;
 // these MUST fail now for the right reason (missing module / missing export).
 
 import * as fs from "node:fs";
@@ -88,9 +88,9 @@ afterEach(() => {
 	fs.rmSync(CONFIG_DIR, { recursive: true, force: true });
 });
 
-// ── REQ-CLI-10: rine_hook_create ────────────────────────────────────────────
+// ── rine_hook_create ────────────────────────────────────────────
 
-describe("rine_hook_create (REQ-CLI-10)", () => {
+describe("rine_hook_create", () => {
 	it("POSTs ONLY {hook_name} — no secret key in the request body", async () => {
 		const ctx = makeCtx();
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue(
@@ -121,7 +121,7 @@ describe("rine_hook_create (REQ-CLI-10)", () => {
 		expect(result.public_url).toBe(`https://${HOSTNAME}/`);
 		expect(result.signature_header).toBe("X-Hub-Signature-256");
 		expect(result.content_type).toBe("application/json");
-		// REQ-CLI-10 edge case: the tool MUST tell the operator where it stored
+		// Edge case: the tool MUST tell the operator where it stored
 		// the secret (MCP config dir may differ from the relay's box).
 		expect(JSON.stringify(result)).toContain(CONFIG_DIR);
 	});
@@ -149,9 +149,9 @@ describe("rine_hook_create (REQ-CLI-10)", () => {
 	});
 });
 
-// ── REQ-CLI-10: rine_hook_list (no secret) ──────────────────────────────────
+// ── rine_hook_list (no secret) ──────────────────────────────────
 
-describe("rine_hook_list (REQ-CLI-10)", () => {
+describe("rine_hook_list", () => {
 	it("GETs the funnel-hook list and the result carries no secret field", async () => {
 		const ctx = makeCtx();
 		// Pre-seed a local secret to prove list never reads/returns it.
@@ -186,9 +186,9 @@ describe("rine_hook_list (REQ-CLI-10)", () => {
 	});
 });
 
-// ── REQ-CLI-10: rine_hook_delete (purges local secret) ──────────────────────
+// ── rine_hook_delete (purges local secret) ──────────────────────
 
-describe("rine_hook_delete (REQ-CLI-10)", () => {
+describe("rine_hook_delete", () => {
 	it("DELETEs the named hook, returns {ok:true}, and purges the local secret", async () => {
 		const ctx = makeCtx();
 		fs.mkdirSync(join(CONFIG_DIR, "funnel", AGENT_ID), {
@@ -222,9 +222,9 @@ describe("rine_hook_delete (REQ-CLI-10)", () => {
 	});
 });
 
-// ── REQ-CLI-11: NO relay execution tool; optional read-only status ──────────
+// ── NO relay execution tool; optional read-only status ──────────
 
-describe("MCP funnel surface — no relay execution tool (REQ-CLI-11)", () => {
+describe("MCP funnel surface — no relay execution tool", () => {
 	it("registers no rine_relay / rine_funnel / rine_tunnel execution tool", async () => {
 		const { tools } = await import("../../src/tools/index.js");
 		const names = tools.map((t) => t.name);
@@ -257,7 +257,7 @@ describe("MCP funnel surface — no relay execution tool (REQ-CLI-11)", () => {
 			string,
 			unknown
 		>;
-		// Deferred decision #4: no per-hook "relay live" boolean in v1.
+		// Deferred: no per-hook "relay live" boolean in v1.
 		expect(JSON.stringify(result)).not.toMatch(/"(live|tunnel_live)"\s*:/);
 	});
 });

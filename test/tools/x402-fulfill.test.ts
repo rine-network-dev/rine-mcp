@@ -1,13 +1,13 @@
-// REQ-M04 / F-1 / R-1 / F-4 / #2 tests — rine_fulfill. The thing under test is the
+// rine_fulfill tests. The thing under test is the
 // tool's SURFACE wiring: fetch the payment, guard (not-payment / no-keys), decrypt
 // + parse it, hand it to rine-core's SHARED payee-settle orchestration
 // (`resolvePayeeRequirement` → `settleToReceipt`), thread the receipt via the shared
 // `sendReceipt`, and map the outcome to a TYPED status while surfacing the reconciled
-// `matched_quote`. The R-1 ref binding + reconcile depth is owned by rine-core's own
+// `matched_quote`. The ref binding + reconcile depth is owned by rine-core's own
 // unit tests (payee-settle / quote-ref); the receipt-plane crypto + marker economics
 // are owned by rine-core's payee-receipt / messages tests. Here those shared
 // functions are stubbed at the MCP import boundary so the surface contract — status
-// routing, refusal fail-closed WITH a terminal receipt (#2), facilitator resolution,
+// routing, refusal fail-closed WITH a terminal receipt, facilitator resolution,
 // override plumbing, and marker-toggle forwarding — is exercised for real.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -107,7 +107,7 @@ const SETTLEMENT = {
 	payer: PAYER_ID,
 };
 
-/** A `settled` FulfillReceipt carrying the matched-quote provenance (R-1). */
+/** A `settled` FulfillReceipt carrying the matched-quote provenance. */
 function settledReceipt(
 	quoteMessageId: string | null = QUOTE_ID,
 ): Record<string, unknown> {
@@ -190,7 +190,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-describe("rine_fulfill — R-1 happy ref-bind (settles the referenced quote)", () => {
+describe("rine_fulfill — happy ref-bind (settles the referenced quote)", () => {
 	it("resolves, settles, threads the receipt, and surfaces the matched quote", async () => {
 		const ctx = makeCtx();
 		primeFulfillable(ctx);
@@ -204,7 +204,7 @@ describe("rine_fulfill — R-1 happy ref-bind (settles the referenced quote)", (
 		expect((result.settlement as Record<string, unknown>).network).toBe(
 			"base-sepolia",
 		);
-		// R-1: the reconciled quote's provenance is surfaced (id + economic terms).
+		// The reconciled quote's provenance is surfaced (id + economic terms).
 		expect(result.matched_quote).toEqual({
 			message_id: QUOTE_ID,
 			amount: "100000",
@@ -278,7 +278,7 @@ describe("rine_fulfill — R-1 happy ref-bind (settles the referenced quote)", (
 	});
 });
 
-describe("rine_fulfill — fail-closed refusals from the shared resolver (#2: no settle, but terminal receipt)", () => {
+describe("rine_fulfill — fail-closed refusals from the shared resolver (no settle, but terminal receipt)", () => {
 	async function expectRefused(
 		err: InstanceType<typeof X402Error>,
 		expectedCode: string,
@@ -294,7 +294,7 @@ describe("rine_fulfill — fail-closed refusals from the shared resolver (#2: no
 		expect(result.code).toBe(expectedCode);
 		// Fail closed: never settle payer-authored terms.
 		expect(mockSettleToReceipt).not.toHaveBeenCalled();
-		// #2: but STILL thread a terminal payment-failed refusal receipt so the payer's
+		// But STILL thread a terminal payment-failed refusal receipt so the payer's
 		// thread does not hang open. The receipt body is a synthesised refusal carrying
 		// the typed code, the payer address, and the network — never a success.
 		expect(mockSendReceipt).toHaveBeenCalledTimes(1);
@@ -376,7 +376,7 @@ describe("rine_fulfill — expected-terms override (out-of-band quote)", () => {
 	});
 });
 
-describe("rine_fulfill — cleartext marker toggle forwarded to the shared receipt (REQ-X03)", () => {
+describe("rine_fulfill — cleartext marker toggle forwarded to the shared receipt", () => {
 	it("forwards emit_marker=true by default (marker economics discipline is core's)", async () => {
 		const ctx = makeCtx();
 		primeFulfillable(ctx);
@@ -399,7 +399,7 @@ describe("rine_fulfill — cleartext marker toggle forwarded to the shared recei
 	});
 });
 
-describe("rine_fulfill — failure branches (typed outcomes, REQ-M04)", () => {
+describe("rine_fulfill — failure branches (typed outcomes)", () => {
 	it("threads the verification-failed receipt body when the shared ladder reports it", async () => {
 		const ctx = makeCtx();
 		primeFulfillable(ctx);
@@ -469,7 +469,7 @@ describe("rine_fulfill — failure branches (typed outcomes, REQ-M04)", () => {
 		expect(mockSendReceipt).not.toHaveBeenCalled();
 	});
 
-	it("returns malformed-payload and threads a failure receipt on an undecodable payment (F-4)", async () => {
+	it("returns malformed-payload and threads a failure receipt on an undecodable payment", async () => {
 		const ctx = makeCtx();
 		primeFulfillable(ctx);
 		// Decrypts to a body with no `accepted` and no signed authorization: the REAL

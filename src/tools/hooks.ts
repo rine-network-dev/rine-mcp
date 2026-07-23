@@ -1,7 +1,7 @@
-// REQ-CLI-10/11 — MCP funnel MANAGEMENT tools: rine_hook_create / rine_hook_list
+// MCP funnel MANAGEMENT tools: rine_hook_create / rine_hook_list
 // / rine_hook_delete. Thin request/response wrappers cloned from rine_groups for
 // the X-Rine-Agent resolution pattern. The long-lived `rine relay` is NEVER an
-// MCP tool (a never-returning relay would hang the stdio transport, REQ-CLI-11).
+// MCP tool (a never-returning relay would hang the stdio transport).
 //
 // FROZEN-CONTRACT: rine_hook_create generates the HMAC secret CLIENT-SIDE
 // (randomBytes(32) hex) and POSTs ONLY {hook_name} — never a secret. It persists

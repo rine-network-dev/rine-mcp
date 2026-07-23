@@ -52,7 +52,7 @@ const envToken = process.env.RINE_TOKEN;
 const canRefresh = !envToken;
 
 // Drawn once for this long-lived process so co-located agents desynchronize their
-// refreshes instead of clustering into the same minute (D-4).
+// refreshes instead of clustering into the same minute.
 const refreshMargin = jitteredRefreshMargin();
 const tokenFn: TokenFn = (force = false) => {
 	const entry = getCredentialEntry(configDir, "default");

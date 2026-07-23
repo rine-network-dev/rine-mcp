@@ -1,4 +1,4 @@
-// REQ-M03 tests — rine_pay. The thing under test is the tool's wiring of the
+// rine_pay tests. The thing under test is the tool's wiring of the
 // message plane to rine-core's REAL wallet/policy/x402 logic: quote decrypt →
 // policy select (deny-by-default + caps) → EIP-3009 sign → in-thread send →
 // local spend accounting. Only the NETWORK-coupled crypto boundary is mocked
@@ -137,7 +137,7 @@ afterEach(() => {
 	fs.rmSync(CONFIG_DIR, { recursive: true, force: true });
 });
 
-describe("rine_pay — happy path (REQ-M03)", () => {
+describe("rine_pay — happy path", () => {
 	it("signs and sends the payment in-thread and returns payment-submitted", async () => {
 		const ctx = makeCtx();
 		createWallet(CONFIG_DIR, PAYER_ID);
@@ -190,7 +190,7 @@ describe("rine_pay — happy path (REQ-M03)", () => {
 		expect(signed.payload.authorization.value).toBe("100000");
 	});
 
-	it("stamps the answered quote's message-id into the signed payload (R-1)", async () => {
+	it("stamps the answered quote's message-id into the signed payload", async () => {
 		const ctx = makeCtx();
 		createWallet(CONFIG_DIR, PAYER_ID);
 		savePolicy(CONFIG_DIR, PAYER_ID, policy());
@@ -218,7 +218,7 @@ describe("rine_pay — happy path (REQ-M03)", () => {
 	});
 });
 
-describe("rine_pay — cleartext marker carries no economics (REQ-X03)", () => {
+describe("rine_pay — cleartext marker carries no economics", () => {
 	it("attaches only {status,rail} by default and never an amount/asset/address", async () => {
 		const ctx = makeCtx();
 		createWallet(CONFIG_DIR, PAYER_ID);
@@ -252,7 +252,7 @@ describe("rine_pay — cleartext marker carries no economics (REQ-X03)", () => {
 	});
 });
 
-describe("rine_pay — policy refusals (REQ-M03 / REQ-X03)", () => {
+describe("rine_pay — policy refusals", () => {
 	it("refuses over the per-tx cap without sending", async () => {
 		const ctx = makeCtx();
 		createWallet(CONFIG_DIR, PAYER_ID);
@@ -297,7 +297,7 @@ describe("rine_pay — policy refusals (REQ-M03 / REQ-X03)", () => {
 	});
 });
 
-describe("rine_pay — auto-pay threshold (REQ-M03)", () => {
+describe("rine_pay — auto-pay threshold", () => {
 	it("refuses when auto_pay=true and the quote exceeds autoPayThreshold", async () => {
 		const ctx = makeCtx();
 		createWallet(CONFIG_DIR, PAYER_ID);
@@ -329,7 +329,7 @@ describe("rine_pay — auto-pay threshold (REQ-M03)", () => {
 	});
 });
 
-describe("rine_pay — reserve-under-lock + S6 double-pay guard (REQ-M03)", () => {
+describe("rine_pay — reserve-under-lock + double-pay guard", () => {
 	it("returns already-paid on a repeat pay of the same quote, unless allow_repay", async () => {
 		const ctx = makeCtx();
 		createWallet(CONFIG_DIR, PAYER_ID);
@@ -377,7 +377,7 @@ describe("rine_pay — reserve-under-lock + S6 double-pay guard (REQ-M03)", () =
 	});
 });
 
-describe("rine_pay — guard branches (REQ-M03)", () => {
+describe("rine_pay — guard branches", () => {
 	it("returns no-wallet when the agent has no wallet key", async () => {
 		const ctx = makeCtx();
 		savePolicy(CONFIG_DIR, PAYER_ID, policy()); // policy but NO wallet
