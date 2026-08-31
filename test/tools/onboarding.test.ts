@@ -1,4 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as fs from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+	generateAgentKeys,
+	saveAgentKeys,
+	verificationWordsForKey,
+} from "@rine-network/core";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "../../src/tools/types.js";
 
 const mockGetCredentialEntry = vi.fn();
@@ -31,6 +39,36 @@ function makeCtx(): ToolContext {
 }
 
 const validParams = { email: "a@b.com", org_name: "Acme", org_slug: "acme", agent_name: "bot" };
+
+/**
+ * Verification words on the broadest surface: `rine_onboard` is not
+ * allowlist-gated and OpenClaw lifts these tools verbatim, so what they return
+ * about verification words is what most hosts will ever show. The words must
+ * be recomputed from the config dir's own signing key — a fixture that echoed
+ * the server's string back would pass whatever the tool did with it.
+ */
+const KEYED_AGENT_ID = "11111111-2222-3333-4444-555555555555";
+let keyedConfigDir: string;
+let keyedWords: string;
+
+function makeKeyedCtx(): ToolContext {
+	return {
+		client: { get: vi.fn(), post: vi.fn() } as never,
+		configDir: keyedConfigDir,
+		apiUrl: "https://api.test",
+	};
+}
+
+beforeEach(() => {
+	keyedConfigDir = fs.mkdtempSync(join(tmpdir(), "rine-mcp-onboard-"));
+	const keys = generateAgentKeys();
+	saveAgentKeys(keyedConfigDir, KEYED_AGENT_ID, keys);
+	keyedWords = verificationWordsForKey(keys.signing.publicKey);
+});
+
+afterEach(() => {
+	fs.rmSync(keyedConfigDir, { recursive: true, force: true });
+});
 
 function resetAllMocks(): void {
 	mockGetCredentialEntry.mockReset();
@@ -109,6 +147,52 @@ describe("rine_onboard", () => {
 		);
 	});
 
+	it("recomputes the words from this config dir's key, and ships both values", async () => {
+		const ctx = makeKeyedCtx();
+		mockGetCredentialEntry.mockReturnValue(undefined);
+		mockValidateSlug.mockReturnValue(true);
+		mockPerformRegistration.mockResolvedValue({ org_id: "org-1", client_id: "cid" });
+		mockPerformAgentCreation.mockResolvedValue({
+			id: KEYED_AGENT_ID,
+			name: "bot",
+			handle: "bot@acme.rine.network",
+			verification_words: keyedWords,
+		});
+
+		const result = (await rineOnboard.handler(ctx, validParams)) as {
+			agent: { verification_words: string; verification: Record<string, unknown> };
+		};
+
+		expect(result.agent.verification_words).toBe(keyedWords);
+		expect(result.agent.verification).toEqual({
+			status: "match",
+			computed: keyedWords,
+			asserted: keyedWords,
+			match: true,
+		});
+	});
+
+	it("reports a mismatch as a state, keeping both values", async () => {
+		const ctx = makeKeyedCtx();
+		mockGetCredentialEntry.mockReturnValue(undefined);
+		mockValidateSlug.mockReturnValue(true);
+		mockPerformRegistration.mockResolvedValue({ org_id: "org-1", client_id: "cid" });
+		mockPerformAgentCreation.mockResolvedValue({
+			id: KEYED_AGENT_ID,
+			name: "bot",
+			handle: "bot@acme.rine.network",
+			verification_words: "abandon ability able about above",
+		});
+
+		const result = (await rineOnboard.handler(ctx, validParams)) as {
+			agent: { verification: { status: string; computed: string; asserted: string } };
+		};
+
+		expect(result.agent.verification.status).toBe("mismatch");
+		expect(result.agent.verification.computed).toBe(keyedWords);
+		expect(result.agent.verification.asserted).toBe("abandon ability able about above");
+	});
+
 	it("propagates registration errors", async () => {
 		const ctx = makeCtx();
 		mockGetCredentialEntry.mockReturnValue(undefined);
@@ -179,6 +263,40 @@ describe("rine_agent_create", () => {
 			ctx.client, "/tmp/test", "default",
 			{ name: "helper", humanOversight: undefined, unlisted: undefined },
 		);
+	});
+
+	it("ships the comparison beside the server's words", async () => {
+		const ctx = makeKeyedCtx();
+		mockPerformAgentCreation.mockResolvedValue({
+			id: KEYED_AGENT_ID,
+			name: "helper",
+			handle: "helper@acme.rine.network",
+			verification_words: keyedWords,
+		});
+
+		const result = (await rineAgentCreate.handler(ctx, { name: "helper" })) as {
+			verification: { status: string; computed: string };
+		};
+
+		expect(result.verification.status).toBe("match");
+		expect(result.verification.computed).toBe(keyedWords);
+	});
+
+	it("says nothing was recomputed when this config dir holds no key", async () => {
+		const ctx = makeKeyedCtx();
+		mockPerformAgentCreation.mockResolvedValue({
+			id: "99999999-9999-9999-9999-999999999999",
+			name: "helper",
+			handle: "helper@acme.rine.network",
+			verification_words: "abandon ability able about above",
+		});
+
+		const result = (await rineAgentCreate.handler(ctx, { name: "helper" })) as {
+			verification: { status: string; computed: string | null };
+		};
+
+		expect(result.verification.status).toBe("not-computed");
+		expect(result.verification.computed).toBeNull();
 	});
 
 	it("returns undefined poll_url when not returned", async () => {

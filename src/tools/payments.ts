@@ -13,6 +13,7 @@
 // message plane to it. No key material is ever returned.
 
 import {
+	ACTING_AGENT_HEADER,
 	type MessageRead,
 	type PaymentRequired,
 	X402Error,
@@ -29,10 +30,12 @@ import {
 	loadWalletKey,
 	parseX402Payload,
 	readDailySpent,
+	requireAuthenticPlaintext,
 	reserveSpend,
 	selectRequirement,
 	walletKeyExists,
 } from "@rine-network/core";
+import { actingHeaders } from "./group-actors.js";
 import type { ToolContext, ToolDef } from "./types.js";
 
 /** Terminal outcome statuses of rine_pay (typed — never a bare string). */
@@ -44,26 +47,40 @@ const PAY_STATUS = {
 	ABOVE_AUTO_PAY_THRESHOLD: "above-auto-pay-threshold",
 	ALREADY_PAID: "already-paid",
 	WALLET_BUSY: "wallet-busy",
+	INAUTHENTIC_QUOTE: "inauthentic-quote",
 } as const;
 
-/** Decrypt the quote message body into its verbatim `PaymentRequired` object. */
+/**
+ * Decrypt the quote message body into its verbatim `PaymentRequired` object.
+ *
+ * `payeeAgentId` is the quote's server-authenticated sender, which the
+ * envelope's signing key is checked against.
+ */
 async function readQuote(
 	ctx: ToolContext,
 	agentId: string,
 	original: MessageRead,
+	payeeAgentId: string,
 ): Promise<PaymentRequired> {
 	if (!agentKeysExist(ctx.configDir, agentId)) {
 		throw new Error(
 			`No local keys for agent ${agentId} — cannot decrypt the quote.`,
 		);
 	}
-	const { plaintext } = await decryptMessage(
+	const decrypted = await decryptMessage(
 		ctx.configDir,
 		agentId,
 		original.encrypted_payload,
 		ctx.client,
+		payeeAgentId,
 	);
-	return parseX402Payload(original.type, plaintext) as PaymentRequired;
+	// A quote is only the payee's word when the payee signed it: an envelope
+	// re-sealed by a third party is refused here, before the wallet is asked to
+	// sign an authorization against its terms.
+	return parseX402Payload(
+		original.type,
+		requireAuthenticPlaintext(decrypted, payeeAgentId, original.id),
+	) as PaymentRequired;
 }
 
 const rinePay: ToolDef = {
@@ -80,7 +97,9 @@ const rinePay: ToolDef = {
 		"the debit stands even if the send then fails, and there is no refund). " +
 		"Returns a typed `status` — `payment-submitted` on success, or `no-wallet` / " +
 		"`not-payment-required` / `policy-refused` / `above-auto-pay-threshold` / " +
-		"`already-paid` / `wallet-busy`. It does NOT wait for settlement: the receipt " +
+		"`already-paid` / `wallet-busy` / `inauthentic-quote` (the quote's envelope was " +
+		"not signed by the agent the server authenticated as its sender — nothing is " +
+		"signed and nothing is spent). It does NOT wait for settlement: the receipt " +
 		"arrives later as an ordinary inbox message (read it with rine_read / " +
 		"rine_inbox / rine_thread).",
 	inputSchema: {
@@ -119,8 +138,13 @@ const rinePay: ToolDef = {
 	},
 	async handler(ctx, p) {
 		const messageId = String(p.message_id);
+		// The payer is read OUT of the quote below (`original.to_agent_id`), so
+		// the read cannot name the actor from its arguments — hence the lazy rung
+		// (`actingHeaders`, see its JSDoc in `group-actors.ts`).
 		const original = (await ctx.client.get(
 			`/messages/${messageId}`,
+			{},
+			await actingHeaders(ctx, p),
 		)) as MessageRead;
 
 		if (original.type !== X402_MESSAGE_TYPE.PAYMENT_REQUIRED) {
@@ -147,8 +171,20 @@ const rinePay: ToolDef = {
 
 		let pr: PaymentRequired;
 		try {
-			pr = await readQuote(ctx, agentId, original);
+			pr = await readQuote(ctx, agentId, original, recipientId);
 		} catch (err) {
+			if (
+				err instanceof X402Error &&
+				err.code === X402_ERROR.INAUTHENTIC_SENDER
+			) {
+				// Not a parse failure: the quote is attributed to an agent that did
+				// not sign it, so there is nothing here this wallet may pay.
+				return {
+					status: PAY_STATUS.INAUTHENTIC_QUOTE,
+					reason: err.code,
+					detail: err.message,
+				};
+			}
 			return {
 				status: PAY_STATUS.NOT_PAYMENT_REQUIRED,
 				detail: `Could not parse a PaymentRequired from ${messageId}: ${
@@ -252,7 +288,7 @@ const rinePay: ToolDef = {
 		}
 
 		const sent = await ctx.client.post(`/messages/${messageId}/reply`, body, {
-			"X-Rine-Agent": agentId,
+			[ACTING_AGENT_HEADER]: agentId,
 		});
 
 		return {

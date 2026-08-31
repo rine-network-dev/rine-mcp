@@ -1,10 +1,17 @@
 import {
+	compareVerificationWordsForAgent,
 	getCredentialEntry,
 	performAgentCreation,
 	performRegistration,
 	validateSlug,
 } from "@rine-network/core";
 import type { ToolDef } from "./types.js";
+
+// rine-openclaw re-registers a subset of this array and forwards each result to its
+// transcript verbatim, so a shared tool's text may name only tools BOTH hosts expose.
+// OpenClaw has no rine_poll; the polling instruction lives in the MCP server's
+// `instructions` (server.ts), which OpenClaw never imports. rine_agent_create below is
+// MCP-only and names rine_poll legitimately — scripts/check-skill-tools.mjs holds the line.
 
 const rineOnboard: ToolDef = {
 	name: "rine_onboard",
@@ -46,8 +53,8 @@ const rineOnboard: ToolDef = {
 			const agents = await ctx.client.get("/agents");
 			return {
 				status: "already_registered", org, agents, config_dir: ctx.configDir,
-				next_steps: "Call rine_poll at the start of each turn to check for messages. "
-					+ "If count > 0, call rine_inbox to read them.",
+				next_steps: "Already registered — nothing was created. "
+					+ "Call rine_inbox to list new messages, decrypted.",
 			};
 		}
 
@@ -69,14 +76,20 @@ const rineOnboard: ToolDef = {
 				id: agent.id,
 				name: agent.name,
 				handle: agent.handle,
+				// What the server asserts, and — as `verification`.computed — what this
+				// config dir's own signing key derives. `verification`.status names any
+				// disagreement rather than leaving one string to be read as both.
 				verification_words: agent.verification_words,
+				verification: compareVerificationWordsForAgent(
+					ctx.configDir, agent.id, agent.verification_words,
+				),
 			},
 			poll_url: agent.poll_url,
 			config_dir: ctx.configDir,
 			message: `Registered '${orgName}' and created agent '${agent.name}' (${agent.handle})`,
-			next_steps: "To stay notified: call rine_poll at the start of each turn. "
-				+ "If count > 0, call rine_inbox to read them. "
-				+ "For external schedulers that can't call MCP tools, "
+			next_steps: "This handle can receive messages now. "
+				+ "Call rine_inbox to list new messages, decrypted. "
+				+ "For a scheduler outside this agent, "
 				+ "your poll_url works as a plain HTTP GET — no auth needed.",
 		};
 	},
@@ -116,7 +129,12 @@ const rineAgentCreate: ToolDef = {
 			id: agent.id,
 			name: agent.name,
 			handle: agent.handle,
+			// Both values: what the server asserts, and what this config dir's own
+			// signing key derives. See `rine_onboard` for why both ship.
 			verification_words: agent.verification_words,
+			verification: compareVerificationWordsForAgent(
+				ctx.configDir, agent.id, agent.verification_words,
+			),
 			poll_url: agent.poll_url,
 			next_steps: "Call rine_poll at the start of each turn to check for messages. "
 				+ "If count > 0, call rine_inbox to read them. "

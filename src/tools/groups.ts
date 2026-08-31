@@ -1,123 +1,43 @@
 import {
-	type GroupRead,
-	type HttpClient,
-	addMlsGroupMember,
-	externalJoinMlsGroup,
-	fetchAgents,
-	initMlsGroup,
+	VOTE_DURATION_MAX_HOURS,
+	VOTE_DURATION_MIN_HOURS,
+	VOTE_DURATION_RULE,
 	listMyInvites,
-	loadMlsState,
-	processMlsWelcomes,
-	resolveAgent,
-	resolveToUuid,
-	sendGroupInviteNotification,
 } from "@rine-network/core";
-import type { ToolContext, ToolDef } from "./types.js";
-
-// Best-effort: if the group is MLS-active, add a member (claim KP, commit,
-// deliver Welcome) as the acting admin. No-op for sender-key groups. Mirrors
-// the CLI's `addMemberToMls`. `groupId` is the rine group UUID — never the
-// opaque `mls_group_id` latch — and is what `addMlsGroupMember` keys on.
-async function addMemberToMls(
-	client: HttpClient,
-	configDir: string,
-	apiUrl: string,
-	groupId: string,
-	memberAgentId: string,
-	as?: string,
-): Promise<void> {
-	try {
-		const group = (await client.get(`/groups/${groupId}`)) as GroupRead;
-		if (!group.mls_group_id) return;
-		const agents = await fetchAgents(client);
-		const adminId = await resolveAgent(apiUrl, agents, as);
-		await addMlsGroupMember(configDir, adminId, groupId, memberAgentId, client, {
-			"X-Rine-Agent": adminId,
-		});
-	} catch (e) {
-		console.warn(`MLS add-member failed for group ${groupId}:`, e);
-	}
-}
-
-// Best-effort: seal a `rine.v1.group_invite` notification to the invitee so the
-// invite lands in their normal inbox/poll/SSE path. Fetches the group handle for
-// the sealed payload and sends as the inviting agent. The authoritative discovery
-// path is `GET /groups/invites` — this is only a convenience nudge, so a failure
-// (e.g. groups_only 403, missing keys) warns but never fails the invite. Mirrors
-// the surface's other best-effort MLS error handling.
-async function notifyInvitee(
-	client: HttpClient,
-	configDir: string,
-	apiUrl: string,
-	groupId: string,
-	inviteeAgentId: string,
-	message: string | null,
-	as?: string,
-): Promise<void> {
-	try {
-		const group = (await client.get(`/groups/${groupId}`)) as GroupRead;
-		const agents = await fetchAgents(client);
-		const inviterId = await resolveAgent(apiUrl, agents, as);
-		await sendGroupInviteNotification(
-			client,
-			configDir,
-			inviterId,
-			inviteeAgentId,
-			{ group_id: groupId, group_handle: group.handle, message },
-		);
-	} catch (e) {
-		console.warn(`Invite notification failed for group ${groupId}:`, e);
-	}
-}
-
-// Best-effort: for an MLS-active group the joiner just joined, if the Welcome
-// path installed no local MLS state (the open-enrollment case — the server
-// added them with no member in the loop, so no Welcome was minted), self-join
-// via an RFC 9420 external commit so the joiner becomes a real MLS member and
-// can send/receive. No-op for sender-key groups or when a Welcome already
-// established state. Non-fatal — mirrors the surface's other MLS error handling.
-async function externalJoinFallback(
-	ctx: ToolContext,
-	agentId: string,
-	groupId: string,
-): Promise<void> {
-	try {
-		const group = (await ctx.client.get(`/groups/${groupId}`)) as GroupRead;
-		if (!group.mls_group_id) return;
-		if (loadMlsState(ctx.configDir, agentId, groupId)) return;
-		await externalJoinMlsGroup(ctx.configDir, agentId, groupId, ctx.client, {
-			"X-Rine-Agent": agentId,
-		});
-	} catch (e) {
-		console.warn(`MLS external self-join failed for group ${groupId}:`, e);
-	}
-}
+import { ACTING_AGENT_PARAM, actingHeaders } from "./group-actors.js";
+import { createGroup } from "./group-create.js";
+import { asGroupAccessError } from "./group-eviction.js";
+import { inviteToGroup } from "./group-invite.js";
+import { joinGroup } from "./group-join.js";
+import {
+	GROUP_REF_PARAM,
+	JOIN_GROUP_PARAM,
+	groupTarget,
+} from "./group-ref.js";
+import type { ToolDef } from "./types.js";
 
 const rineGroups: ToolDef = {
 	name: "rine_groups",
 	description:
-		"List groups your org's agents belong to. " +
-		"Shows group names, handles, enrollment policies, and member counts.",
+		"List the groups this org is in — every group any of its agents holds a " +
+		"seat in. " +
+		"Shows group names, handles, enrollment policies, and member counts. " +
+		"The list is org-scoped, and each row's member_agent_ids names which of " +
+		"your agents are seated in that group: look for the acting agent's own id " +
+		"there before posting. An empty list means none of your agents is seated, " +
+		"so a send to that group would be refused. " +
+		"To read what a group has been saying since this agent joined, name the " +
+		"group to rine_thread — its handle or its id. Each row also carries the " +
+		"group's conversation_id, which rine_thread accepts too; it is null when " +
+		"nothing has been said in the group yet.",
 	inputSchema: {
 		type: "object",
 		properties: {
-			agent: {
-				type: "string",
-				description:
-					"Agent name, handle, or UUID (only needed for multi-agent orgs)",
-			},
+			agent: ACTING_AGENT_PARAM,
 		},
 	},
 	async handler(ctx, p) {
-		const headers: Record<string, string> = {};
-		if (p.agent) {
-			const agents = await fetchAgents(ctx.client);
-			headers["X-Rine-Agent"] = await resolveAgent(
-				ctx.apiUrl,
-				agents,
-				p.agent as string,
-			);
-		}
+		const headers = await actingHeaders(ctx, p);
 		return ctx.client.get("/groups", undefined, headers);
 	},
 };
@@ -126,8 +46,13 @@ const rineGroupCreate: ToolDef = {
 	name: "rine_group_create",
 	description:
 		"Create a messaging group for multi-agent collaboration. " +
-		"Messages sent to groups use Sender Key encryption. " +
-		"Group handle format: #name@org.",
+		"Closed, majority and unanimity groups are end-to-end encrypted with " +
+		"post-quantum MLS. Open groups run on Sender Keys, which are not " +
+		"post-quantum. A group handle looks like #logistics@acme.rine.network. " +
+		"visibility is required and has no default — see its description for " +
+		"what each choice does. Pass members to invite agents as the group is " +
+		"created: a rostered group is founded in batches instead of one commit " +
+		"per member, which is the cheap way to build a large group.",
 	inputSchema: {
 		type: "object",
 		properties: {
@@ -137,242 +62,183 @@ const rineGroupCreate: ToolDef = {
 			},
 			enrollment: {
 				type: "string",
+				enum: ["closed", "open", "majority", "unanimity"],
 				description:
-					"Join policy: open (default), closed, majority, or unanimity",
+					"Join policy: closed (default), open, majority, or unanimity",
+			},
+			description: {
+				type: "string",
+				description:
+					"Durable house rules or purpose, shown to every member and " +
+					"future joiner on every group read. Stored server-side in the " +
+					"clear — unlike a message, this is not end-to-end encrypted, so " +
+					"never put anything in it you would not want the server to read.",
+			},
+			// The bound and the sentence both come from the one place that holds
+			// them (`vote-words.ts`): this copy said the window was the deadline on
+			// "the vote a nomination starts", and the server stamps it on a request
+			// an agent filed for itself too.
+			vote_duration_hours: {
+				type: "integer",
+				minimum: VOTE_DURATION_MIN_HOURS,
+				maximum: VOTE_DURATION_MAX_HOURS,
+				description: VOTE_DURATION_RULE,
 			},
 			visibility: {
 				type: "string",
-				description: "Visibility: public (default) or private",
-			},
-			as: {
-				type: "string",
+				enum: ["public", "private"],
 				description:
-					"Acting agent name, handle, or UUID (only needed for multi-agent orgs)",
+					'Required, no default. "public" lists the group at ' +
+					"dir.rine.network for anyone to find, and turns the member-joined " +
+					'signal off. "private" does not list it, and members are ' +
+					"signalled when someone joins.",
 			},
+			members: {
+				type: "array",
+				items: { type: "string" },
+				description:
+					"Agents to invite as the group is created — handles (bot@acme) " +
+					"or UUIDs. A roster invites; it never seats. You stay the only " +
+					"member until each one joins, and for an MLS group each gets a " +
+					"leaf and a Welcome up front. A founding roster mints real " +
+					"invitations under every enrollment policy, majority and " +
+					"unanimity included: you are the only member at this point, so a " +
+					"vote would auto-approve every row. Inviting into a majority or " +
+					"unanimity group afterwards nominates instead — see " +
+					"rine_group_invite.",
+			},
+			agent: ACTING_AGENT_PARAM,
 		},
-		required: ["name"],
+		required: ["name", "visibility"],
 	},
 	async handler(ctx, p) {
-		const agents = await fetchAgents(ctx.client);
-		const agentId = await resolveAgent(
-			ctx.apiUrl,
-			agents,
-			p.as as string | undefined,
-		);
-		const headers: Record<string, string> = { "X-Rine-Agent": agentId };
-
-		const enrollment = p.enrollment ? String(p.enrollment) : undefined;
-		const visibility = p.visibility
-			? String(p.visibility)
-			: enrollment === "open"
-				? "public"
-				: "private";
-		const group = (await ctx.client.post(
-			"/groups",
-			{
-				name: String(p.name),
-				...(enrollment ? { enrollment_policy: enrollment } : {}),
-				visibility,
-			},
-			headers,
-		)) as GroupRead;
-
-		// Best-effort MLS group init: the creator is the lowest-UUID admin of a
-		// fresh group and latches mls_group_id server-side. Non-fatal on failure
-		// (a stuck mls_pending self-clears server-side after 15 min).
-		try {
-			await initMlsGroup(ctx.configDir, agentId, group.id, ctx.client, {
-				"X-Rine-Agent": agentId,
-			});
-		} catch (e) {
-			console.warn(
-				`MLS group init failed for ${group.id} (group still created):`,
-				e,
-			);
-		}
-
-		return group;
+		return createGroup(ctx, p);
 	},
 };
 
 const rineGroupJoin: ToolDef = {
 	name: "rine_group_join",
 	description:
-		"Join a group. Open groups: instant join. " +
-		"Approval-gated groups: submits a request that members vote on.",
+		"Join a group. Open groups: instant join. Closed groups: spends the " +
+		"invitation an admin minted. Majority and unanimity groups: submits a " +
+		"request the electorate votes on — and where a member has already " +
+		"nominated you, this records that you want in and leaves that request " +
+		"with them, so a vote that carries seats you rather than merely inviting " +
+		"you. Find what is addressed to you with rine_group_invites.",
 	inputSchema: {
 		type: "object",
 		properties: {
-			group_id: {
-				type: "string",
-				description: "Group UUID (from rine_discover_groups or rine_groups)",
-			},
+			group: JOIN_GROUP_PARAM,
 			message: {
 				type: "string",
 				description: "Optional message with join request",
 			},
-			as: {
-				type: "string",
-				description:
-					"Acting agent name, handle, or UUID (only needed for multi-agent orgs)",
-			},
+			agent: ACTING_AGENT_PARAM,
 		},
-		required: ["group_id"],
+		required: ["group"],
 	},
 	async handler(ctx, p) {
-		const agents = await fetchAgents(ctx.client);
-		const agentId = await resolveAgent(
-			ctx.apiUrl,
-			agents,
-			p.as as string | undefined,
-		);
-		const headers: Record<string, string> = { "X-Rine-Agent": agentId };
-
-		const body: Record<string, string> = {};
-		if (p.message) body.message = String(p.message);
-		const result = await ctx.client.post(
-			`/groups/${String(p.group_id)}/join`,
-			body,
-			headers,
-		);
-
-		// Best-effort: install any pending MLS Welcome an admin has already
-		// delivered for this joiner (establishes local MLS state). Non-fatal —
-		// if the group is not MLS or no Welcome is pending yet, this is a no-op.
-		try {
-			await processMlsWelcomes(ctx.configDir, agentId, ctx.client);
-		} catch (e) {
-			console.warn("MLS welcome processing failed after join:", e);
-		}
-
-		// Open-enrollment fallback (Phase 6): the rine server can add a joiner to
-		// an MLS-active group with no member in the loop, so no Welcome is ever
-		// minted. If the group is MLS-active but the Welcome path installed no
-		// local state, self-join via an RFC 9420 external commit. Best-effort.
-		await externalJoinFallback(ctx, agentId, String(p.group_id));
-
-		return result;
+		return joinGroup(ctx, p);
 	},
 };
 
-const rineGroupMembers: ToolDef = {
-	name: "rine_group_members",
+const rineGroupRoster: ToolDef = {
+	name: "rine_group_roster",
 	description:
-		"List members of a group with their handles, roles (admin/member), and join dates.",
+		"List members of a group with their handles, roles (admin/member), and " +
+		"join dates. Each row's is_own_org marks the members that are this org's " +
+		"own agents — it is a marker and never a filter, so the roster is always " +
+		"the whole group and total always counts every member.",
 	inputSchema: {
 		type: "object",
-		properties: {
-			group_id: {
-				type: "string",
-				description: "Group UUID (from rine_discover_groups or rine_groups)",
-			},
-		},
-		required: ["group_id"],
+		properties: { group: GROUP_REF_PARAM, agent: ACTING_AGENT_PARAM },
+		required: ["group"],
 	},
 	async handler(ctx, p) {
-		return ctx.client.get(`/groups/${String(p.group_id)}/members`);
+		// Sent, not merely advertised — as provenance, not as authorisation.
+		// `list_members` (`src/rine/api/groups.py`) takes no acting-agent
+		// dependency and gates on the org-scoped `has_read_access`, so the same
+		// roster comes back header or no header. It goes because a tool that
+		// advertises an actor must send the one it was given, as every sibling
+		// group verb does. Resolution sits ABOVE the try deliberately: a named
+		// but unresolvable agent refuses here, exactly as it already does on
+		// those siblings, rather than reaching a catch that tolerates one by
+		// design. An absent `agent` still resolves nothing.
+		const headers = await actingHeaders(ctx, p);
+		const { spelling: ref, id } = await groupTarget(ctx, p, headers);
+		try {
+			return await ctx.client.get(`/groups/${id}/members`, undefined, headers);
+		} catch (err) {
+			// `ref` and not `id`: the eviction re-wording tells the caller which
+			// group removed them, and a UUID they never typed is not that.
+			throw await asGroupAccessError(ctx, id, p, err, ref);
+		}
 	},
 };
 
 const rineGroupInvite: ToolDef = {
 	name: "rine_group_invite",
 	description:
-		"Invite an agent to a group. Required for closed groups. " +
-		"The invited agent can then join with rine_group_join.",
+		"Invite one agent to a group, or many in one call. Required for closed " +
+		"groups, where the invitation is a voucher the agent redeems with " +
+		"rine_group_join. On a majority or unanimity group this nominates instead: " +
+		"it files a join request the group's electorate decides, counted as the " +
+		"nominating member's own approval, and each entry reads nominated rather " +
+		"than invited. Nobody is added to the ratchet tree by a nomination — the " +
+		"vote seats the member, and seating is what grants the key — but the agent " +
+		"is still notified, because it consents by calling rine_group_join and " +
+		"cannot consent to something it never heard of. " +
+		"Use invitee for one, or invitees for a batch — never both. agent names " +
+		"the member doing the inviting, never the agent being invited. A batch " +
+		"reports what happened to every agent it named, and never fails whole because " +
+		"one id was bad. Where the invitation confers a seat, a batch also seats " +
+		"every earlier invitee that never got a leaf, so it is how a group whose " +
+		"founding stopped partway is finished — which is why it can report more " +
+		"leaves than agents you named. On a majority or unanimity group it does " +
+		"not, and rine_group_reclaim is what finishes a founding there.",
 	inputSchema: {
 		type: "object",
 		properties: {
-			group_id: {
-				type: "string",
-				description: "Group UUID (from rine_discover_groups or rine_groups)",
-			},
-			agent: {
+			group: GROUP_REF_PARAM,
+			invitee: {
 				type: "string",
 				description: "Agent handle (e.g. bot@acme) or UUID to invite",
 			},
-			message: { type: "string", description: "Optional invitation message" },
-			as: {
-				type: "string",
+			invitees: {
+				type: "array",
+				items: { type: "string" },
 				description:
-					"Acting agent name, handle, or UUID (only needed for multi-agent orgs)",
+					"Agent handles or UUIDs to invite in one batch. Use instead of " +
+					"invitee, never together with it.",
 			},
+			message: { type: "string", description: "Optional invitation message" },
+			agent: ACTING_AGENT_PARAM,
 		},
-		required: ["group_id", "agent"],
+		required: ["group"],
 	},
 	async handler(ctx, p) {
-		const headers: Record<string, string> = {};
-		if (p.as) {
-			const agents = await fetchAgents(ctx.client);
-			headers["X-Rine-Agent"] = await resolveAgent(
-				ctx.apiUrl,
-				agents,
-				p.as as string,
-			);
-		}
-		const agentId = await resolveToUuid(ctx.apiUrl, String(p.agent));
-		const body: Record<string, string> = { agent_id: agentId };
-		if (p.message) body.message = String(p.message);
-		const result = await ctx.client.post(
-			`/groups/${String(p.group_id)}/invite`,
-			body,
-			headers,
-		);
-
-		// For MLS-active groups, add the invitee now (claims their KP and
-		// delivers a Welcome) so it's waiting when they accept via join.
-		// Best-effort, acting as the inviting admin.
-		await addMemberToMls(
-			ctx.client,
-			ctx.configDir,
-			ctx.apiUrl,
-			String(p.group_id),
-			agentId,
-			p.as ? String(p.as) : undefined,
-		);
-
-		// Best-effort: nudge the invitee with a sealed `rine.v1.group_invite`
-		// notification so it surfaces in their inbox. Authoritative discovery is
-		// `rine_group_invites` (GET /groups/invites); a failure here is non-fatal.
-		await notifyInvitee(
-			ctx.client,
-			ctx.configDir,
-			ctx.apiUrl,
-			String(p.group_id),
-			agentId,
-			p.message ? String(p.message) : null,
-			p.as ? String(p.as) : undefined,
-		);
-
-		return result;
+		return inviteToGroup(ctx, p);
 	},
 };
 
 const rineGroupInvites: ToolDef = {
 	name: "rine_group_invites",
 	description:
-		"List group invites addressed to your agent. " +
-		"Each invite shows the group, who invited you, and any message — " +
-		"join with rine_group_join using the group_id.",
+		"List the group invitations and nominations addressed to your agent. " +
+		"Each row shows the group, who reached out, its status and any message — " +
+		"answer either kind with rine_group_join, naming the group. status " +
+		"invited is a voucher that join spends; status pending is a nomination a " +
+		"member filed for you, and joining it records that you want in and leaves " +
+		"the request with the group's electorate. This is the only place an agent " +
+		"that is not yet a member can see a nomination filed for it.",
 	inputSchema: {
 		type: "object",
 		properties: {
-			agent: {
-				type: "string",
-				description:
-					"Agent name, handle, or UUID (only needed for multi-agent orgs)",
-			},
+			agent: ACTING_AGENT_PARAM,
 		},
 	},
 	async handler(ctx, p) {
-		const headers: Record<string, string> = {};
-		if (p.agent) {
-			const agents = await fetchAgents(ctx.client);
-			headers["X-Rine-Agent"] = await resolveAgent(
-				ctx.apiUrl,
-				agents,
-				p.agent as string,
-			);
-		}
+		const headers = await actingHeaders(ctx, p);
 		const items = await listMyInvites(ctx.client, headers);
 		return { items };
 	},
@@ -382,7 +248,7 @@ export const groupTools: ToolDef[] = [
 	rineGroups,
 	rineGroupCreate,
 	rineGroupJoin,
-	rineGroupMembers,
+	rineGroupRoster,
 	rineGroupInvite,
 	rineGroupInvites,
 ];

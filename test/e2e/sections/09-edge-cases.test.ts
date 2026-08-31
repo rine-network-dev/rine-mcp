@@ -61,7 +61,7 @@ describe.skipIf(isProd())("09 — Edge Cases", () => {
 	});
 
 	it("9.6 Non-existent group → members error", async () => {
-		const err = await beta.callExpectError("rine_group_members", {
+		const err = await beta.callExpectError("rine_group_roster", {
 			group_id: "00000000-0000-0000-0000-000000000000",
 		});
 		expect(err.toLowerCase()).toMatch(/not found|404|error/);

@@ -18,17 +18,20 @@ import {
 	type PaymentPayload,
 	X402Error,
 	X402FacilitatorError,
+	X402_ERROR,
 	X402_MESSAGE_TYPE,
 	agentKeysExist,
 	decryptMessage,
 	matchedQuoteToWire,
 	parseX402Payload,
 	refusalReceiptBody,
+	requireAuthenticPlaintext,
 	resolveFacilitatorConfig,
 	resolvePayeeRequirement,
 	sendReceipt,
 	settleToReceipt,
 } from "@rine-network/core";
+import { actingHeaders } from "./group-actors.js";
 import type { ToolContext, ToolDef } from "./types.js";
 
 const rineFulfill: ToolDef = {
@@ -51,9 +54,11 @@ const rineFulfill: ToolDef = {
 		"reconciled quote's message-id + amount + asset + network) so the integration " +
 		"can confirm the paid quote corresponds to the good it delivers. Returns a " +
 		"typed `status` — `settled`, `settlement-failed`, " +
-		"`verification-failed`, `payment-refused` (no/forged quote reference or bad " +
-		"expected terms; the typed `code` is included and a failure receipt is " +
-		"threaded so the payer reaches a terminal state, but nothing is settled), " +
+		"`verification-failed`, `payment-refused` (no/forged quote reference, bad " +
+		"expected terms, or an envelope not signed by the agent the server " +
+		"authenticated as the payment's sender; the typed `code` is included and a " +
+		"failure receipt is threaded so the payer reaches a terminal state, but " +
+		"nothing is settled), " +
 		"`malformed-payload` (undecodable payload; a failure receipt is threaded), " +
 		"`facilitator-error` (no receipt), `no-keys`, or `not-payment`. It does NOT " +
 		"sign anything and returns no key material.",
@@ -122,8 +127,13 @@ const rineFulfill: ToolDef = {
 	},
 	async handler(ctx: ToolContext, p) {
 		const messageId = String(p.message_id);
+		// The payee is read OUT of the message below (`message.to_agent_id`), so
+		// the read cannot name the actor from its arguments — hence the lazy rung
+		// (`actingHeaders`, see its JSDoc in `group-actors.ts`).
 		const message = (await ctx.client.get(
 			`/messages/${messageId}`,
+			{},
+			await actingHeaders(ctx, p),
 		)) as MessageRead;
 
 		if (message.type !== X402_MESSAGE_TYPE.PAYMENT) {
@@ -147,26 +157,34 @@ const rineFulfill: ToolDef = {
 			};
 		}
 
-		const facilitator = resolveFacilitatorConfig(String(p.facilitator ?? "payai"), {
-			headers: p.facilitator_headers as Record<string, string> | undefined,
-			verifyPath: p.verify_path as string | undefined,
-			settlePath: p.settle_path as string | undefined,
-		});
+		const facilitator = resolveFacilitatorConfig(
+			String(p.facilitator ?? "payai"),
+			{
+				headers: p.facilitator_headers as Record<string, string> | undefined,
+				verifyPath: p.verify_path as string | undefined,
+				settlePath: p.settle_path as string | undefined,
+			},
+		);
 
-		const { plaintext } = await decryptMessage(
+		const decrypted = await decryptMessage(
 			ctx.configDir,
 			payeeAgentId,
 			message.encrypted_payload,
 			ctx.client,
+			payerAgentId,
 		);
 
-		// A structurally malformed payment (no `accepted` / no signed
-		// authorization) is a typed, catchable refusal — thread a graceful
-		// payment-failed receipt so the payer reaches a terminal state, never a
-		// stack trace.
+		// A payment is only the payer's word when the payer signed it, and a
+		// structurally malformed one (no `accepted` / no signed authorization)
+		// cannot be acted on either. Both are typed, catchable refusals — thread a
+		// graceful payment-failed receipt so the payer reaches a terminal state,
+		// never a stack trace.
 		let pp: PaymentPayload;
 		try {
-			pp = parseX402Payload(message.type, plaintext) as PaymentPayload;
+			pp = parseX402Payload(
+				message.type,
+				requireAuthenticPlaintext(decrypted, payerAgentId, messageId),
+			) as PaymentPayload;
 		} catch (err) {
 			if (!(err instanceof X402Error)) throw err;
 			const sent = await sendReceipt({
@@ -179,7 +197,10 @@ const rineFulfill: ToolDef = {
 				emitMarker: p.emit_marker !== false,
 			});
 			return {
-				status: "malformed-payload",
+				status:
+					err.code === X402_ERROR.INAUTHENTIC_SENDER
+						? "payment-refused"
+						: "malformed-payload",
 				code: err.code,
 				detail: err.message,
 				receipt: sent,

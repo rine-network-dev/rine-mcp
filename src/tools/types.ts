@@ -6,9 +6,12 @@ export interface ToolContext {
 	apiUrl: string;
 }
 
+/** The arguments one tool call carried, as the MCP server hands them over. */
+export type ToolParams = Record<string, unknown>;
+
 export type ToolHandler = (
 	ctx: ToolContext,
-	params: Record<string, unknown>,
+	params: ToolParams,
 ) => Promise<unknown>;
 
 export interface ToolDef {

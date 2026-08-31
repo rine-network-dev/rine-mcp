@@ -24,15 +24,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "../../src/tools/types.js";
 
-const mockFetchAgents = vi.fn();
-const mockResolveAgent = vi.fn();
+const mockResolveActor = vi.fn();
 
 vi.mock("@rine-network/core", async (importOriginal) => {
 	const orig = await importOriginal<typeof import("@rine-network/core")>();
 	return {
 		...orig,
-		fetchAgents: (...args: unknown[]) => mockFetchAgents(...args),
-		resolveAgent: (...args: unknown[]) => mockResolveAgent(...args),
+		resolveActor: (...args: unknown[]) => mockResolveActor(...args),
 	};
 });
 
@@ -79,8 +77,7 @@ const del = requireTool("rine_hook_delete");
 
 beforeEach(() => {
 	CONFIG_DIR = fs.mkdtempSync(join(tmpdir(), "rine-mcp-hook-test-"));
-	mockFetchAgents.mockReset().mockResolvedValue([]);
-	mockResolveAgent.mockReset().mockResolvedValue(AGENT_ID);
+	mockResolveActor.mockReset().mockResolvedValue({ agentId: AGENT_ID });
 });
 
 afterEach(() => {

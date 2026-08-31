@@ -113,6 +113,16 @@ describe("rine_whoami", () => {
 		expect(JSON.stringify(result).toLowerCase()).not.toContain("private");
 		expect(mockGetWalletAddress).toHaveBeenCalledTimes(1); // only for the wallet agent
 	});
+
+	it("tells a model this is where a member_agent_ids UUID resolves", () => {
+		// This surface emits raw wire, so `rine_groups` hands back agent UUIDs
+		// and renders no clause about them. Nothing else pairs an id with a
+		// handle — without this pointer a model reads `member_agent_ids` and has
+		// no way to learn whether one of them is its own. The description is the
+		// only place it can be told, and nothing else in the tree pins it.
+		expect(rineWhoami.description).toContain("member_agent_ids");
+		expect(rineWhoami.description).toContain("rine_groups");
+	});
 });
 
 describe("rine_poll", () => {

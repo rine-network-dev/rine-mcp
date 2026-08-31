@@ -36,7 +36,7 @@ import { getApiUrl, isProd } from "../helpers.js";
 const EURC_ASSET = "0x808456652fdb597867f38412077a9182bf77359f";
 const NETWORK = "eip155:84532";
 
-/** Verbatim x402 V2 PaymentRequired quote (carries a `resource`, per D4). */
+/** Verbatim x402 V2 PaymentRequired quote (carries a `resource`). */
 function paymentRequired(
 	amount: string,
 	payTo: string,

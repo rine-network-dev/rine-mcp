@@ -12,23 +12,18 @@
 import {
 	type HookCreated,
 	deleteHookSecret,
-	fetchAgents,
 	generateHookSecret,
-	resolveAgent,
 	saveHookSecret,
 } from "@rine-network/core";
-import type { ToolContext, ToolDef } from "./types.js";
+import {
+	ACTING_AGENT_PARAM,
+	actingAgent,
+	withActorNote,
+} from "./group-actors.js";
+import type { ToolDef } from "./types.js";
 
 const SIGNATURE_HEADER = "X-Hub-Signature-256";
 const CONTENT_TYPE = "application/json";
-
-async function resolveAgentId(
-	ctx: ToolContext,
-	agent?: unknown,
-): Promise<string> {
-	const agents = await fetchAgents(ctx.client);
-	return resolveAgent(ctx.apiUrl, agents, agent as string | undefined);
-}
 
 const rineHookCreate: ToolDef = {
 	name: "rine_hook_create",
@@ -46,15 +41,13 @@ const rineHookCreate: ToolDef = {
 				type: "string",
 				description: "Hook name (lowercase, hyphens; default: default)",
 			},
-			agent: {
-				type: "string",
-				description: "Agent name, handle, or UUID (multi-agent orgs)",
-			},
+			agent: ACTING_AGENT_PARAM,
 		},
 	},
 	async handler(ctx, p) {
 		const name = p.name ? String(p.name) : "default";
-		const agentId = await resolveAgentId(ctx, p.agent);
+		const acting = await actingAgent(ctx, p);
+		const agentId = acting.agentId;
 
 		// Generate + persist the secret locally; POST carries ONLY {hook_name}.
 		const secret = generateHookSecret();
@@ -63,19 +56,22 @@ const rineHookCreate: ToolDef = {
 			hook_name: name,
 		})) as HookCreated;
 
-		return {
-			name: created.hook_name,
-			hostname: created.hostname,
-			tier: created.termination,
-			// SNI-routed by hostname; the relay ignores the request path, so the
-			// payload URL is the bare host root (matches `rine hook create`).
-			public_url: `https://${created.hostname}/`,
-			secret,
-			signature_header: SIGNATURE_HEADER,
-			content_type: CONTENT_TYPE,
-			secret_stored_at: storedAt,
-			note: `Secret saved at ${storedAt}. It is shown once and not stored on rine. To run the relay on another machine, pass it via --secret-file or --secret-env.`,
-		};
+		return withActorNote(
+			{
+				name: created.hook_name,
+				hostname: created.hostname,
+				tier: created.termination,
+				// SNI-routed by hostname; the relay ignores the request path, so the
+				// payload URL is the bare host root (matches `rine hook create`).
+				public_url: `https://${created.hostname}/`,
+				secret,
+				signature_header: SIGNATURE_HEADER,
+				content_type: CONTENT_TYPE,
+				secret_stored_at: storedAt,
+				note: `Secret saved at ${storedAt}. It is shown once and not stored on rine. To run the relay on another machine, pass it via --secret-file or --secret-env.`,
+			},
+			acting,
+		);
 	},
 };
 
@@ -86,15 +82,15 @@ const rineHookList: ToolDef = {
 	inputSchema: {
 		type: "object",
 		properties: {
-			agent: {
-				type: "string",
-				description: "Agent name, handle, or UUID (multi-agent orgs)",
-			},
+			agent: ACTING_AGENT_PARAM,
 		},
 	},
 	async handler(ctx, p) {
-		const agentId = await resolveAgentId(ctx, p.agent);
-		return ctx.client.get(`/agents/${agentId}/funnel/hooks`);
+		const acting = await actingAgent(ctx, p);
+		return withActorNote(
+			await ctx.client.get(`/agents/${acting.agentId}/funnel/hooks`),
+			acting,
+		);
 	},
 };
 
@@ -106,19 +102,17 @@ const rineHookDelete: ToolDef = {
 		type: "object",
 		properties: {
 			name: { type: "string", description: "Hook name to delete" },
-			agent: {
-				type: "string",
-				description: "Agent name, handle, or UUID (multi-agent orgs)",
-			},
+			agent: ACTING_AGENT_PARAM,
 		},
 		required: ["name"],
 	},
 	async handler(ctx, p) {
 		const name = String(p.name);
-		const agentId = await resolveAgentId(ctx, p.agent);
+		const acting = await actingAgent(ctx, p);
+		const agentId = acting.agentId;
 		await ctx.client.delete(`/agents/${agentId}/funnel/hooks/${name}`);
 		deleteHookSecret(ctx.configDir, agentId, name);
-		return { ok: true };
+		return withActorNote({ ok: true }, acting);
 	},
 };
 

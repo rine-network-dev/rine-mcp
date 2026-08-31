@@ -171,11 +171,16 @@ function primeFulfillable(
 	mockAgentKeysExist.mockReturnValue(true);
 	mockDecryptMessage.mockResolvedValue({
 		plaintext: JSON.stringify(pp),
-		verificationStatus: "valid",
+		senderKid: `rine:${PAYER_ID}`,
+		verified: true,
+		verificationStatus: "verified",
 	});
 	mockResolvePayeeRequirement.mockResolvedValue(resolved());
 	mockSettleToReceipt.mockResolvedValue(settledReceipt());
-	mockSendReceipt.mockResolvedValue({ id: "receipt-1", conversation_id: "c-1" });
+	mockSendReceipt.mockResolvedValue({
+		id: "receipt-1",
+		conversation_id: "c-1",
+	});
 }
 
 beforeEach(() => {
@@ -223,6 +228,20 @@ describe("rine_fulfill — happy ref-bind (settles the referenced quote)", () =>
 		expect(call.receiptBody).toEqual(SETTLEMENT);
 		expect(call.emitMarker).toBe(true);
 		expect(result.receipt).toEqual({ id: "receipt-1", conversation_id: "c-1" });
+	});
+
+	it("checks the payment envelope against the payment's server-authenticated sender", async () => {
+		const ctx = makeCtx();
+		primeFulfillable(ctx);
+
+		await rineFulfill.handler(ctx, {
+			message_id: PAYMENT_ID,
+			facilitator: "https://fac.test",
+		});
+
+		// The expected signer is the payer the server says sent the payment —
+		// never the kid or the header the sender supplied.
+		expect(mockDecryptMessage.mock.calls[0]![4]).toBe(PAYER_ID);
 	});
 
 	it("binds via the payee id + conversation of the payment, not the payer's terms", async () => {
@@ -546,6 +565,92 @@ describe("rine_fulfill — failure branches (typed outcomes)", () => {
 			"expect_network",
 		])
 			expect(schema.properties).toHaveProperty(k);
+	});
+});
+
+describe("rine_fulfill — sender binding on the money path", () => {
+	/** A third agent that re-seals a payer-signed payment and posts it as its own. */
+	const RESEALER_ID = "55555555-5555-5555-5555-555555555555";
+
+	/** The payment decrypts and parses; only its signer is wrong. */
+	function resealedPayment(ctx: ToolContext, status: string): void {
+		primeFulfillable(ctx);
+		mockDecryptMessage.mockResolvedValue({
+			plaintext: JSON.stringify(payment()),
+			senderKid: `rine:${RESEALER_ID}`,
+			verified: false,
+			verificationStatus: status,
+		});
+	}
+
+	it("REFUSES a payment the row's sender did not sign, settling nothing", async () => {
+		const ctx = makeCtx();
+		resealedPayment(ctx, "sender-mismatch");
+
+		const result = (await rineFulfill.handler(ctx, {
+			message_id: PAYMENT_ID,
+			facilitator: "https://fac.test",
+		})) as Record<string, unknown>;
+
+		// The payer-signed authorization inside a re-sealed envelope never reaches
+		// the resolver or the facilitator.
+		expect(mockResolvePayeeRequirement).not.toHaveBeenCalled();
+		expect(mockSettleToReceipt).not.toHaveBeenCalled();
+		expect(result.status).toBe("payment-refused");
+		expect(result.code).toBe(X402_ERROR.INAUTHENTIC_SENDER);
+		// Fail closed still terminates the thread it arrived in.
+		expect(lastReceiptCall().receiptBody).toMatchObject({
+			success: false,
+			errorReason: X402_ERROR.INAUTHENTIC_SENDER,
+		});
+	});
+
+	it("REFUSES it under the expected-terms override as well", async () => {
+		// The override short-circuits the quote-ref binding, so it is the mode in
+		// which a re-sealed payment would otherwise settle into the payee's own
+		// wallet with the receipt and the goods routed to the resealer.
+		const ctx = makeCtx();
+		resealedPayment(ctx, "sender-mismatch");
+
+		const result = (await rineFulfill.handler(ctx, {
+			message_id: PAYMENT_ID,
+			facilitator: "https://fac.test",
+			pay_to: PAY_TO,
+			expect_amount: "0.10",
+			expect_asset: EURC,
+			expect_network: "eip155:84532",
+		})) as Record<string, unknown>;
+
+		expect(mockResolvePayeeRequirement).not.toHaveBeenCalled();
+		expect(mockSettleToReceipt).not.toHaveBeenCalled();
+		expect(result.status).toBe("payment-refused");
+	});
+
+	it("REFUSES a payment whose signature does not check out", async () => {
+		const ctx = makeCtx();
+		resealedPayment(ctx, "invalid");
+
+		const result = (await rineFulfill.handler(ctx, {
+			message_id: PAYMENT_ID,
+			facilitator: "https://fac.test",
+		})) as Record<string, unknown>;
+
+		expect(mockSettleToReceipt).not.toHaveBeenCalled();
+		expect(result.status).toBe("payment-refused");
+		expect(result.code).toBe(X402_ERROR.INAUTHENTIC_SENDER);
+	});
+
+	it("settles a payment the row's sender did sign (false-positive guard)", async () => {
+		const ctx = makeCtx();
+		primeFulfillable(ctx);
+
+		const result = (await rineFulfill.handler(ctx, {
+			message_id: PAYMENT_ID,
+			facilitator: "https://fac.test",
+		})) as Record<string, unknown>;
+
+		expect(mockSettleToReceipt).toHaveBeenCalledTimes(1);
+		expect(result.status).toBe("settled");
 	});
 });
 

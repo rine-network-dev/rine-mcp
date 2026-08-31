@@ -40,7 +40,7 @@ describe.skipIf(isProd())("06 — Groups", () => {
 			name: "test-open",
 			enrollment: "open",
 			visibility: "public",
-			as: state.acme.agentName,
+			agent: state.acme.agentName,
 		});
 		expect(result.id).toBeTruthy();
 		expect(result.handle).toContain("#test-open@");
@@ -81,7 +81,7 @@ describe.skipIf(isProd())("06 — Groups", () => {
 	});
 
 	it("6.6 Group has 3 members", async () => {
-		const result = await acme.call<Record<string, unknown>>("rine_group_members", {
+		const result = await acme.call<Record<string, unknown>>("rine_group_roster", {
 			group_id: openGroupId,
 		});
 		const items = result.items as Array<Record<string, unknown>>;
@@ -99,7 +99,7 @@ describe.skipIf(isProd())("06 — Groups", () => {
 		// Beta (admin) invites Carol
 		await beta.call("rine_group_invite", {
 			group_id: closedGroupId,
-			agent: state.gamma.agentId,
+			invitee: state.gamma.agentId,
 		});
 
 		// Carol joins after invite

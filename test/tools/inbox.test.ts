@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "../../src/tools/types.js";
 
-const mockFetchAgents = vi.fn();
-const mockResolveAgent = vi.fn();
+const mockResolveActor = vi.fn();
 const mockAgentKeysExist = vi.fn();
 const mockDecryptMessage = vi.fn();
 const mockDecryptGroupMessage = vi.fn();
@@ -12,8 +11,7 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 	const orig = await importOriginal<typeof import("@rine-network/core")>();
 	return {
 		...orig,
-		fetchAgents: (...args: unknown[]) => mockFetchAgents(...args),
-		resolveAgent: (...args: unknown[]) => mockResolveAgent(...args),
+		resolveActor: (...args: unknown[]) => mockResolveActor(...args),
 		agentKeysExist: (...args: unknown[]) => mockAgentKeysExist(...args),
 		decryptMessage: (...args: unknown[]) => mockDecryptMessage(...args),
 		decryptGroupMessage: (...args: unknown[]) => mockDecryptGroupMessage(...args),
@@ -45,15 +43,13 @@ function makeInboxResponse(items: unknown[] = []) {
 
 describe("rine_inbox — status filter and auto-mark", () => {
 	beforeEach(() => {
-		mockFetchAgents.mockReset();
-		mockResolveAgent.mockReset();
+		mockResolveActor.mockReset();
 		mockAgentKeysExist.mockReset();
 		mockDecryptMessage.mockReset();
 		mockDecryptGroupMessage.mockReset();
 		mockIngestSenderKeyDistribution.mockReset();
 
-		mockFetchAgents.mockResolvedValue([{ id: AGENT_ID, handle: "bot@org.rine.network" }]);
-		mockResolveAgent.mockResolvedValue(AGENT_ID);
+		mockResolveActor.mockResolvedValue({ agentId: AGENT_ID });
 		mockAgentKeysExist.mockReturnValue(false);
 	});
 

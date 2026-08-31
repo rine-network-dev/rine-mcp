@@ -107,7 +107,9 @@ function primePayable(
 	mockAgentKeysExist.mockReturnValue(true);
 	mockDecryptMessage.mockResolvedValue({
 		plaintext: JSON.stringify(payload),
-		verified: "verified",
+		senderKid: `rine:${PAYEE_ID}`,
+		verified: true,
+		verificationStatus: "verified",
 	});
 	mockFetchRecipientKeys.mockResolvedValue({
 		encryption: {},
@@ -166,6 +168,19 @@ describe("rine_pay — happy path", () => {
 			"application/json",
 		);
 		expect((body as Record<string, unknown>).encrypted_payload).toBe("ENC");
+	});
+
+	it("checks the quote envelope against the quote's server-authenticated sender", async () => {
+		const ctx = makeCtx();
+		createWallet(CONFIG_DIR, PAYER_ID);
+		savePolicy(CONFIG_DIR, PAYER_ID, policy());
+		primePayable(ctx, quotePayload());
+
+		await rinePay.handler(ctx, { message_id: QUOTE_ID });
+
+		// The expected signer is the payee the server says issued the quote —
+		// never the kid or the header the sender supplied.
+		expect(mockDecryptMessage.mock.calls[0]![4]).toBe(PAYEE_ID);
 	});
 
 	it("signs the ACTUAL PaymentPayload (real EIP-3009 signature) before encrypting", async () => {
@@ -410,6 +425,70 @@ describe("rine_pay — guard branches", () => {
 	it("requires message_id in its input schema", () => {
 		const schema = rinePay.inputSchema as { required?: string[] };
 		expect(schema.required).toContain("message_id");
+	});
+});
+
+describe("rine_pay — sender binding on the money path", () => {
+	/** A third agent that re-seals the payee's quote and posts it as its own. */
+	const RESEALER_ID = "44444444-4444-4444-4444-444444444444";
+
+	/** The quote decrypts to payable terms; only its signer is wrong. */
+	function resealedQuote(ctx: ToolContext, status: string): void {
+		primePayable(ctx, quotePayload());
+		mockDecryptMessage.mockResolvedValue({
+			plaintext: JSON.stringify(quotePayload()),
+			senderKid: `rine:${RESEALER_ID}`,
+			verified: false,
+			verificationStatus: status,
+		});
+	}
+
+	it("returns inauthentic-quote for a quote the payee did not sign, and spends nothing", async () => {
+		const ctx = makeCtx();
+		createWallet(CONFIG_DIR, PAYER_ID);
+		savePolicy(CONFIG_DIR, PAYER_ID, policy());
+		resealedQuote(ctx, "sender-mismatch");
+
+		const result = (await rinePay.handler(ctx, {
+			message_id: QUOTE_ID,
+		})) as Record<string, unknown>;
+
+		// A typed refusal, not a parse complaint: the model must be able to tell a
+		// re-sealed quote from a malformed one.
+		expect(result.status).toBe("inauthentic-quote");
+		expect(result.reason).toBe("inauthentic-sender");
+		expect(String(result.detail)).toContain(RESEALER_ID);
+		expect(ctx.client.post).not.toHaveBeenCalled();
+		expect(readDailySpent(CONFIG_DIR, PAYER_ID)).toBe(0n);
+	});
+
+	it("returns inauthentic-quote when the quote's signature does not check out", async () => {
+		const ctx = makeCtx();
+		createWallet(CONFIG_DIR, PAYER_ID);
+		savePolicy(CONFIG_DIR, PAYER_ID, policy());
+		resealedQuote(ctx, "invalid");
+
+		const result = (await rinePay.handler(ctx, {
+			message_id: QUOTE_ID,
+		})) as Record<string, unknown>;
+
+		expect(result.status).toBe("inauthentic-quote");
+		expect(ctx.client.post).not.toHaveBeenCalled();
+		expect(readDailySpent(CONFIG_DIR, PAYER_ID)).toBe(0n);
+	});
+
+	it("still pays a quote the payee did sign (false-positive guard)", async () => {
+		const ctx = makeCtx();
+		createWallet(CONFIG_DIR, PAYER_ID);
+		savePolicy(CONFIG_DIR, PAYER_ID, policy());
+		primePayable(ctx, quotePayload());
+
+		const result = (await rinePay.handler(ctx, {
+			message_id: QUOTE_ID,
+		})) as Record<string, unknown>;
+
+		expect(result.status).toBe("payment-submitted");
+		expect(readDailySpent(CONFIG_DIR, PAYER_ID)).toBe(100000n);
 	});
 });
 

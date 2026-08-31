@@ -11,10 +11,20 @@ import type { ToolDef } from "./types.js";
 
 const rineWhoami: ToolDef = {
 	name: "rine_whoami",
+	// The `id`→`handle` clause is the pointer this tool owes. It returns raw wire
+	// and renders no prose, so `rine_groups` hands back `member_agent_ids` as
+	// UUIDs — values a model has never seen for itself and cannot join to
+	// anything without being told where the other half of the pair lives. This
+	// tool IS that other half: it is the only place the two are reported side by
+	// side. Adding the pointer here costs one clause; resolving the ids inside
+	// `rine_groups` would mean this surface stopped emitting the wire.
 	description:
 		"Show current rine identity: org name/slug, trust tier, and all agents " +
 		"with their handles, policies, local key status, and x402 wallet info " +
-		"(EVM address + whether a spend policy is set — never key material).",
+		"(EVM address + whether a spend policy is set — never key material). " +
+		"Each agent's id is reported next to its handle, which is what rine_groups' " +
+		"member_agent_ids needs: those are agent UUIDs, and this is where you " +
+		"resolve one to the agent it names — including your own.",
 	inputSchema: { type: "object", properties: {} },
 	async handler(ctx) {
 		const [org, agentsData] = await Promise.all([

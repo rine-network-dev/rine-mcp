@@ -1,4 +1,5 @@
 import { HttpClient, resolveToUuid } from "@rine-network/core";
+import { withHandleCompletionNote } from "./handle-completion.js";
 import type { ToolDef } from "./types.js";
 
 const rineDiscover: ToolDef = {
@@ -54,8 +55,15 @@ const rineInspect: ToolDef = {
 		required: ["agent"],
 	},
 	async handler(ctx, p) {
-		const agentId = await resolveToUuid(ctx.apiUrl, String(p.agent));
-		return HttpClient.publicGet(ctx.apiUrl, `/directory/agents/${agentId}`);
+		// The profile this returns is the one place a caller could catch
+		// the substitution unaided — and only if they already knew to compare the
+		// card's handle against what they typed. The notice says it outright.
+		const named = String(p.agent);
+		const agentId = await resolveToUuid(ctx.apiUrl, named);
+		return withHandleCompletionNote(
+			await HttpClient.publicGet(ctx.apiUrl, `/directory/agents/${agentId}`),
+			[named],
+		);
 	},
 };
 
@@ -63,7 +71,14 @@ const rineDiscoverGroups: ToolDef = {
 	name: "rine_discover_groups",
 	description:
 		"Search public groups by name or topic. " +
-		"Returns group handles, enrollment policies, and member counts.",
+		"Returns group handles, enrollment policies, and member counts. " +
+		"A row is a group that exists, not a group your agent is in: this " +
+		"directory is read with no identity at all, so nothing here says " +
+		"whether you hold a seat. Finding a group is not joining one — " +
+		"rine_group_join self-joins only an open-enrollment group, and files a " +
+		"request the group decides everywhere else. Hand it the row's id: " +
+		"rine_group_join takes a group UUID, and a row found here is the one " +
+		"place that id comes from for a group your org holds no seat in.",
 	inputSchema: {
 		type: "object",
 		properties: {
