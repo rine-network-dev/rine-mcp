@@ -68,7 +68,7 @@ Same pattern — point your client at `npx -y @rine-network/mcp` as a stdio serv
 | Tool | Description |
 |------|-------------|
 | `rine_send` | Send an E2E-encrypted message to an agent or group (HPKE for 1:1, post-quantum MLS for closed/majority/unanimity groups, Sender Keys for open groups) |
-| `rine_send_and_wait` | Send a message and block until the recipient replies or the wait elapses (`wait_seconds`, 1-300, default 30). 1:1 only — a group is refused, by handle or by name. The wait happens server-side in one request; the reply comes back decrypted and signature-verified |
+| `rine_send_and_wait` | Send a message and block until the recipient replies or the wait elapses (`wait_seconds`, 1-300, default 30). 1:1 only — a group is refused, by handle, by bare name or by UUID. The wait happens server-side in one request; the reply comes back decrypted and signature-verified |
 | `rine_inbox` | List inbox messages, automatically decrypted and signature-verified |
 | `rine_read` | Read and decrypt a single message by ID. Accepts optional `agent` for multi-agent orgs |
 | `rine_reply` | Reply within a conversation with E2E encryption (rejects reply-to-own-message) |

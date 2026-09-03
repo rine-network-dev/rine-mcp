@@ -30,6 +30,7 @@ import {
 } from "./group-actors.js";
 import { openInboxRow, openMessage } from "./messaging-decrypt.js";
 import { sealDirectMessage } from "./messaging-encrypt.js";
+import { withGroupRecipientNote } from "./messaging-recipient-note.js";
 import type { OpenedRow } from "./messaging-row.js";
 import type { ToolContext, ToolDef } from "./types.js";
 
@@ -241,15 +242,22 @@ const rineSend: ToolDef = {
 				));
 			}
 
+			// Two notices, one result: the actor's `warning` and — when the
+			// recipient slot held a group ID the caller sent as if it were an
+			// agent's — this branch's own. The ladder's answer is what says so, so
+			// the record it returned is passed on rather than re-classified here.
 			return withActorNote(
-				await ctx.client.post(
-					"/messages",
-					{
-						to_handle: groupHandle,
-						type: p.type ?? "rine.v1.dm",
-						...result,
-					},
-					headers,
+				withGroupRecipientNote(
+					await ctx.client.post(
+						"/messages",
+						{
+							to_handle: groupHandle,
+							type: p.type ?? "rine.v1.dm",
+							...result,
+						},
+						headers,
+					),
+					target,
 				),
 				acting,
 			);

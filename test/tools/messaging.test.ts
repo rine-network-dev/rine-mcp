@@ -118,6 +118,9 @@ function agentTarget(id: string, spelling: string): RecipientTarget {
 	};
 }
 
+/** A group's own id, as a caller who believed it named an agent would type it. */
+const GROUP_UUID = "44444444-4444-4444-4444-444444444444";
+
 /** The spelling `rine_send` handed the ladder on its first call. */
 function ladderWasAsked(): string {
 	return mockResolveRecipient.mock.calls[0]![2] as string;
@@ -299,6 +302,106 @@ describe("rine_send — short-handle normalization", () => {
 		const handleArg = gocskCall![3];
 		expect(handleArg).toBe("#dev@acmecorp.rine.network");
 	});
+
+	// 🔴 No silent acceptance, on the surface whose caller is a model. The id
+	// rung reads the GROUP namespace first, so a UUID copied out of the wrong
+	// column no longer answers `Agent not found` — it seals under the group's key
+	// and every org seated in that group reads the message. STDERR is the host's
+	// log file here, so the only channel the model can see is the tool result.
+	it("tells the caller a group ID went to a group, on the tool result", async () => {
+		const ctx = makeCtx();
+		mockResolveActor.mockResolvedValue({ agentId: "sender-uuid" });
+		// The id rung's own route, and it answers for the row it was asked about:
+		// `readableGroupById` refuses a server naming a different id.
+		(ctx.client.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+			id: GROUP_UUID,
+			handle: "#dev@acmecorp.rine.network",
+			mls_group_id: null,
+		});
+		mockGetOrCreateSenderKey.mockResolvedValue({
+			state: {},
+			groupId: GROUP_UUID,
+		});
+		mockEncryptGroupMessage.mockResolvedValue({
+			result: {
+				encrypted_payload: "enc-group",
+				encryption_version: "sender-key-v1",
+			},
+		});
+		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({
+			id: "msg-id-recipient",
+		});
+
+		const result = (await rineSend.handler(ctx, {
+			to: GROUP_UUID,
+			payload: { text: "meant for one agent" },
+		})) as Record<string, unknown>;
+
+		// The server's own answer is still there in full — the notice is spread
+		// onto it, never a wrapper that hides the row a model came for.
+		expect(result.id).toBe("msg-id-recipient");
+		const note = String(result.group_recipient);
+		// The caller's spelling and the handle the wire carried, and nothing else:
+		// a third handle or an `@org` slot would be a placeholder in a sentence
+		// about a real send.
+		expect(note).toContain(`'${GROUP_UUID}'`);
+		expect(note).toContain("#dev@acmecorp.rine.network");
+	});
+
+	// The other half, and why the notice asks the reference CLASS instead of
+	// comparing the spelling with the handle. Both spellings below are this
+	// tool's own documented ways of naming a group, and the BARE one is what
+	// makes the difference measurable here: `#dev@acmecorp` is completed by
+	// `normalizeHandle` before the ladder ever classifies it, so by the time a
+	// record exists its spelling already equals the handle — a string comparison
+	// would look correct on it. `dev` is never completed, so a notice keyed on
+	// `handle !== spelling` would ride every bare group send.
+	it.each(["#dev@acmecorp", "dev"])(
+		"says nothing when the group was named as a group (%s)",
+		async (spelling) => {
+			const ctx = makeCtx();
+			mockResolveActor.mockResolvedValue({ agentId: "sender-uuid" });
+			// The bare rung asks two routes, and they must answer differently: the
+			// collision guard reads `GET /agents` and refuses a bare name that is
+			// an AGENT's, so answering it with the group list would refuse `dev`
+			// before any group ladder ran.
+			(ctx.client.get as ReturnType<typeof vi.fn>).mockImplementation(
+				async (path: string) =>
+					path.startsWith("/agents")
+						? { items: [] }
+						: {
+								items: [
+									{
+										id: "group-uuid",
+										name: "dev",
+										handle: "#dev@acmecorp.rine.network",
+										mls_group_id: null,
+									},
+								],
+							},
+			);
+			mockGetOrCreateSenderKey.mockResolvedValue({
+				state: {},
+				groupId: "group-uuid",
+			});
+			mockEncryptGroupMessage.mockResolvedValue({
+				result: {
+					encrypted_payload: "enc-group",
+					encryption_version: "sender-key-v1",
+				},
+			});
+			(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({
+				id: "msg-plain-group",
+			});
+
+			const result = (await rineSend.handler(ctx, {
+				to: spelling,
+				payload: { text: "hello group" },
+			})) as Record<string, unknown>;
+
+			expect(result).toEqual({ id: "msg-plain-group" });
+		},
+	);
 
 	it("recovers a group handle whose org half names nothing, and posts to the one that exists", async () => {
 		// 🔴 On the verb the measurement was taken from. `rine_send` is where
@@ -559,9 +662,17 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 	it("rine_send emits encryption_version hpke-hybrid-v1 when the recipient has a PQ key", async () => {
 		const ctx = makeRealCtx();
 		mockResolveActor.mockResolvedValue({ agentId: SENDER_ID });
-		// Real fetchRecipientKeys reads the recipient's published PQ key from here.
-		(ctx.client.get as ReturnType<typeof vi.fn>).mockResolvedValue(
-			keysResponse(RECIPIENT_ID, recipientKeys),
+		// Real fetchRecipientKeys reads the recipient's published PQ key from
+		// here — and the real ladder asks the GROUP namespace for a
+		// UUID before the agent one. `RECIPIENT_ID` names an agent, so the group
+		// route is the 404 miss that hands the spelling on; answering it with
+		// this agent body instead would be a server naming a different row,
+		// which `readableGroupById` refuses outright.
+		(ctx.client.get as ReturnType<typeof vi.fn>).mockImplementation(
+			(path: string) =>
+				path.startsWith("/groups/")
+					? Promise.reject(new realCore.RineApiError(404, "Group not found"))
+					: Promise.resolve(keysResponse(RECIPIENT_ID, recipientKeys)),
 		);
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({
 			id: "msg-1",

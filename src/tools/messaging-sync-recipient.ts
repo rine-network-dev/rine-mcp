@@ -94,8 +94,14 @@ function isNoSuchGroupRefusal(err: unknown): boolean {
  * and a re-pin of it reaches this verb for free.
  *
  * 🔴 Only `REF_CLASS.bare` falls back. A `#`-spelled reference never gets here
- * (the pre-flight refuses it before any request), and an `@` or a UUID is the
- * agent resolver's own answer already.
+ * (the pre-flight refuses it before any request), and an `@` is the agent
+ * resolver's own answer already. A UUID is NOT: the id rung reads the
+ * group namespace first, so a UUID naming a group this org may read comes back
+ * `kind: "group"` and `rine_send_and_wait` answers it with
+ * {@link groupIsNotASyncRecipient} carrying that group's own handle — which is
+ * the better sentence, and the same reason the bare arm runs the ladder at all.
+ * Only the id rung's MISS reaches the agent resolver, and a miss RAISES there
+ * rather than returning, so there is still nothing for this fallback to catch.
  *
  * `opts` is the contract's own {@link ResolveOptions} rather than the headers
  * alone, so this verb hands over the same two things `rine_send` does — the
