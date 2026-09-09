@@ -57,6 +57,7 @@ const {
 	generateSenderKey,
 	pqPublicKeyToJWK,
 	saveAgentKeys,
+	saveSenderKeyState,
 	signingPublicKeyToJWK,
 	toBase64Url,
 } = realCore;
@@ -1032,6 +1033,10 @@ describe("messaging — sender-key-unavailable (group)", () => {
 	 */
 	async function unopenableGroupRow(id: string): Promise<MessageRead> {
 		const state = generateSenderKey(GROUP_ID, SENDER_ID);
+		// The sender's own copy, which `encryptGroupMessage` advances in place. A
+		// stand-in sender needs it as much as a real one does: the tail refuses a
+		// state that is on no disk at all rather than discarding the advance.
+		saveSenderKeyState(dir, SENDER_ID, GROUP_ID, [state]);
 		const { result: enc } = await realEncryptGroupMessage(
 			dir,
 			SENDER_ID,
