@@ -9,12 +9,20 @@
  * dir or a key, which is the test for whether a line belongs on this side of it.
  */
 
-import type {
-	MessageDecryptResult,
-	MessageRead,
-	VerificationStatus,
+// One statement per module, with the kinds inline. `SENDER_KEY_UNAVAILABLE_CODE`
+// is imported as a TYPE because this file only ever reads it through `typeof`
+// (`decrypt_error_code` below) — the value is never evaluated here. Under
+// `verbatimModuleSyntax` a value import would emit a runtime import nothing uses,
+// and a later line that does want the value fails as a compile error naming this
+// import, not as anything at a distance.
+import {
+	isAuthenticityFailure,
+	isRefusedDecrypt,
+	type MessageDecryptResult,
+	type MessageRead,
+	type SENDER_KEY_UNAVAILABLE_CODE,
+	type VerificationStatus,
 } from "@rine-network/core";
-import { SENDER_KEY_UNAVAILABLE_CODE, isRefusedDecrypt } from "@rine-network/core";
 
 /** A message row the tools got a verdict on: that verdict, plus the body when trusted. */
 export type DecryptedRow = MessageRead & {
@@ -68,6 +76,25 @@ export function isGroupEnvelope(msg: MessageRead): boolean {
 }
 
 /**
+ * The row shape for a refusal that withholds its content: the verdict rides
+ * back and `decrypted` is absent, so nothing the row's authenticated sender did
+ * not sign can reach the model.
+ *
+ * Shared by the two paths that produce one, which do NOT look alike from the
+ * caller's side: the 1:1 decrypt RETURNS a `RefusedDecrypt` ({@link
+ * decryptedRow}'s refused arm), and the group decrypt THROWS, so each opener's
+ * own `catch` builds the row. One function, because {@link
+ * rowAuthenticityFailure} reads `verification_status` and a copy that forgot to
+ * set it would leave a forged row looking merely unreadable.
+ */
+export function refusedRow(
+	msg: MessageRead,
+	status: VerificationStatus,
+): DecryptedRow {
+	return { ...msg, verified: false, verification_status: status };
+}
+
+/**
  * One row shape for an opened message and for a 1:1 refusal. An authenticity
  * failure withholds the text — the model is never handed content the row's
  * server-authenticated sender did not sign — so the verdict rides back in its
@@ -85,11 +112,7 @@ export function decryptedRow(
 	result: MessageDecryptResult,
 ): DecryptedRow {
 	if (isRefusedDecrypt(result)) {
-		return {
-			...msg,
-			verified: false,
-			verification_status: result.verificationStatus,
-		};
+		return refusedRow(msg, result.verificationStatus);
 	}
 	return {
 		...msg,
@@ -97,4 +120,75 @@ export function decryptedRow(
 		verified: result.verified,
 		verification_status: result.verificationStatus,
 	};
+}
+
+/**
+ * Whether this row actually opened — the one POSITIVE fact a decided row
+ * carries, and the only sound way to ask the question on this surface.
+ *
+ * 🔴 `!row.decrypt_error` is a different question, which is why it is not the
+ * one asked. `openInboxRow` hands a row back **unchanged** — no `decrypted`
+ * AND no `decrypt_error` — in three separate classes: this agent holds no key
+ * material, the envelope is neither a 1:1 nor a group seal, and a thrown cause
+ * that is not the recognised missing-sender-key one. So the `!decrypt_error`
+ * idiom other surfaces use answers "readable" for three kinds of row that never
+ * opened. `decrypted` is set by exactly one line — {@link decryptedRow}'s
+ * opened arm, after the authenticity check has already passed — so it cannot
+ * answer true for a row that stayed sealed or for one whose author was refused.
+ */
+export function rowOpened(row: OpenedRow): boolean {
+	return "decrypted" in row;
+}
+
+/**
+ * Whether this row was refused because its author could not be trusted — the
+ * one refusal that will NEVER heal, because a signature that does not check out
+ * is a permanent property of the bytes.
+ *
+ * Separate from {@link rowOpened} because the two decide opposite things about
+ * the same row: an unreadable row is worth preserving so a later look can open
+ * it, and a forged one has nothing to preserve. Screened through `rine-core`'s
+ * {@link isAuthenticityFailure} rather than compared against a member, so
+ * `unverifiable` — a transient key-lookup outcome, not a verdict — is not swept
+ * in with it.
+ *
+ * The cast reads an OPTIONAL field off the wider arm of {@link OpenedRow}: the
+ * fields {@link DecryptedRow} adds are all optional, so this asserts nothing
+ * about the row, and `undefined` is handled rather than passed on.
+ */
+export function rowAuthenticityFailure(row: OpenedRow): boolean {
+	const status = (row as DecryptedRow).verification_status;
+	return status !== undefined && isAuthenticityFailure(status);
+}
+
+/**
+ * Whether this row was never ciphertext in the first place — so there is
+ * nothing to open, nothing withheld, and nothing a later look could change.
+ *
+ * 🔴 This is `rine-core`'s `not-ciphertext` verdict asked of a row rather than
+ * of a decrypt attempt, and it is a THIRD thing beside opened and refused.
+ * `openInboxRow` hands such a row back unchanged, so without this question the
+ * listing's ack filter decides its fate by falling off the end of two envelope
+ * predicates — and the live instance of the shape is `encryption_version:
+ * "none"`, which `src/rine/api/a2a.py` writes onto a real row for any agent
+ * whose A2A card sets `a2a_accept_cleartext`. No key arrival, no sweep and no
+ * later listing will ever make one open, so leaving it `new` pins it at the head
+ * of every future listing for the life of the agent, growing by one per inbound
+ * A2A message, with no verb on this surface that can clear it.
+ *
+ * 🔴 Core's `not-ciphertext` verdict has two further arms — no authenticated
+ * sender, and an empty payload — and this deliberately asks NEITHER. Not for
+ * tidiness: `messages.from_agent_id` is `nullable=False` on the server model
+ * and `MessageRead.from_agent_id` is non-optional on the wire, so a listing
+ * cannot produce the first, and the second reaches `openInboxRow`'s catch as an
+ * unclassified throw, where "may heal, cause unknown" is the honest verdict.
+ * Widening a permanent-class predicate past the shapes that actually occur is
+ * how an ack filter starts consuming rows on a guess.
+ *
+ * What is left is a permanent property of the row that the server does write,
+ * which is what makes acking sound here and unsound for the classes this
+ * excludes (no local key material, or a throw nobody classified: both may heal).
+ */
+export function rowNeverCiphertext(row: OpenedRow): boolean {
+	return !isDirectEnvelope(row) && !isGroupEnvelope(row);
 }

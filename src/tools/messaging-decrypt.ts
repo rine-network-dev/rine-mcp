@@ -24,6 +24,7 @@ import {
 	decryptGroupMessage,
 	decryptGroupMessageWithRecovery,
 	decryptMessage,
+	groupAuthenticityStatus,
 	ingestSenderKeyDistribution,
 	senderKeyNotRecoveredMessage,
 	unknownSenderKeyId,
@@ -33,6 +34,7 @@ import {
 	decryptedRow,
 	isDirectEnvelope,
 	isGroupEnvelope,
+	refusedRow,
 } from "./messaging-row.js";
 import type { ToolContext } from "./types.js";
 
@@ -88,6 +90,14 @@ export async function openInboxRow(
 		}
 		return msg;
 	} catch (err) {
+		// 🔴 A forged GROUP row lands here, not in `decryptedRow`: the 1:1 decrypt
+		// reports an authenticity refusal, the group decrypt throws it. So this
+		// question has to be asked of the error, or the row goes back unchanged —
+		// looking merely unreadable, which is what the caller's ack filter reads
+		// as "keep it `new` and list it again". Those bytes can never come to
+		// verify, so that is forever, at the head of every future listing.
+		const forged = groupAuthenticityStatus(err);
+		if (forged !== null) return refusedRow(msg, forged);
 		// `decryptGroupMessage` never affords the one-shot recovery `openMessage`
 		// gets, so a missing key here has not had recovery's turn — the honest
 		// sentence names the cause without claiming a fetch that did not happen,
@@ -154,6 +164,14 @@ export async function openMessage(
 			return decryptedRow(msg, result);
 		}
 	} catch (err) {
+		// Same asymmetry as the inbox opener: a forged group row arrives as a
+		// throw. Nothing acks on this path — the server marked the row when it
+		// served it — so what is at stake here is only what the model is TOLD: a
+		// row handed back with no verdict field reads as "could not open it",
+		// while the 1:1 path in the same function says "refused". One message, two
+		// answers, decided by which encryption the sender happened to use.
+		const forged = groupAuthenticityStatus(err);
+		if (forged !== null) return refusedRow(msg, forged);
 		// The one-shot recovery above has already had its turn, so a recognised
 		// cause here is a verdict, not a symptom: the sentence is earned and
 		// carries the code that says so. Every other cause returns the row

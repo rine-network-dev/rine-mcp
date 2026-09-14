@@ -4,14 +4,83 @@ All notable changes to `@rine-network/mcp` are documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.13.0] - 2026-09-14
+
+### Changed — `status: "all"` no longer marks anything
+
+On `status: "new"` — the default — `rine_inbox` hands back decrypted message
+bodies, so that call **is** the read and the delivery mark is what stops the same
+mail arriving again. On `status: "all"` it marked the same way, which meant
+asking to see your whole history silently spent every unread message inside it.
+
+`all`, `delivered` and `read` are look-backs and now mark nothing. `new` is
+unchanged.
+
+**What you will see differently:** a message listed by `status: "all"` stays
+`new` and is still offered to the next `status: "new"` read. A caller that was
+using a full listing to clear its inbox no longer clears it — read with
+`status: "new"`, or `rine_read` the messages by id.
+
+This is a behaviour change, not a fix, which is why this release is a minor and
+not a patch: a patch would have reached every `^0.12.x` install with no action
+taken and nothing said.
+
+The Mastra tools and the Eve connector already behaved this way and already
+documented it in their own tool descriptions — this surface was the one that
+diverged, and nothing chose the divergence.
+
+### Fixed — `rine_inbox` no longer consumes a message it could not read
+
+Listing the inbox with `status: "new"` (the default) or `status: "all"` marked
+**every** row on the page delivered, readable or not. The mark is what takes a
+row out of `?status=new`, `/poll` and SSE catch-up, and there is no un-mark
+route — so one ordinary browse ended the retry eligibility of a message whose
+group key material had not arrived yet. It was still fetchable by id, but an
+unattended poller was never offered it again.
+
+The listing now marks only the rows it actually accounted for: a row that
+decrypted, a row refused because its author could not be trusted, and a row that
+was never ciphertext in the first place. A row that stayed sealed — the sender
+key has not arrived, this agent holds no key material, or the attempt failed for
+a cause nothing classified — stays `new`.
+
+**What you will see differently:** an unreadable message stays in the
+`rine_inbox` listing instead of disappearing after one look, so an agent may
+encounter it again until it is dealt with. Once the missing key material
+arrives, the same message opens on a later listing rather than being lost.
+
+A message refused for **authenticity** (`verification_status` of `invalid` or
+`sender-mismatch`) is still marked delivered: a signature that does not check
+out never becomes valid, so keeping that row would pin it at the head of every
+future listing forever. This release is the first in which that also holds for a
+**group** message. The group decrypt reports a refusal by throwing where the 1:1
+decrypt returns one, so a forged group row used to come back with no verdict at
+all — indistinguishable, to a reader, from a key that had not arrived. It now
+carries its `verification_status` the way its 1:1 counterpart always did, and is
+marked delivered the same way.
+
+A row that was never ciphertext is marked delivered too. `encryption_version:
+"none"` is what the server writes for an inbound A2A message to an agent whose
+card accepts cleartext: there is nothing to open, nothing is being withheld, and
+no later look can change that. Leaving one `new` would add a permanent row to
+the head of every future listing for each inbound A2A message.
+
+`rine_read` and every tool's input schema are unchanged. No tool was added,
+removed or renamed.
+
+## [0.11.0] - 2026-08-31
 
 ### Changed — `rine_group_members` is now `rine_group_roster`, with no alias
 
-`roster` (who is in a group) against `inspect` (what kind of group it is) says
-what the two verbs do. An MCP client configuration that names
-`rine_group_members` no longer resolves it, and there is no deprecation shim.
-The name is the same on every rine surface.
+**Breaking change**, shipped in this release. `roster` (who is in a group)
+against `inspect` (what kind of group it is) says what the two verbs do. An MCP
+client configuration that names `rine_group_members` no longer resolves it, and
+there is no deprecation shim. The name is the same on every rine surface.
+
+The release before this one was 0.9.0, so a configuration carrying the old name
+kept working until this upgrade, and nothing here announced the rename at the
+time. Rename the tool wherever your client lists it; what it returns is
+unchanged.
 
 ### Added — `rine_send_and_wait` and `rine_group_inspect`
 

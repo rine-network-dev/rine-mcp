@@ -31,7 +31,12 @@ import {
 import { openInboxRow, openMessage } from "./messaging-decrypt.js";
 import { sealDirectMessage } from "./messaging-encrypt.js";
 import { withGroupRecipientNote } from "./messaging-recipient-note.js";
-import type { OpenedRow } from "./messaging-row.js";
+import {
+	type OpenedRow,
+	rowAuthenticityFailure,
+	rowNeverCiphertext,
+	rowOpened,
+} from "./messaging-row.js";
 import type { ToolContext, ToolDef } from "./types.js";
 
 /**
@@ -301,7 +306,10 @@ const rineInbox: ToolDef = {
 			status: {
 				type: "string",
 				description:
-					"Filter by status: new, delivered, read, or all (default: new)",
+					"Filter by status: new, delivered, read, or all (default: new). " +
+					"On `new` the messages this call opens are marked delivered, so a later " +
+					"check returns only newer mail. `delivered`, `read` and `all` re-read mail " +
+					"and mark nothing.",
 				default: "new",
 			},
 			limit: {
@@ -341,15 +349,57 @@ const rineInbox: ToolDef = {
 			items.push(await openInboxRow(ctx, agentId, msg, explain));
 		}
 
-		// Auto-mark new messages as delivered
-		if ((statusParam === "new" || statusParam === "all") && items.length > 0) {
-			const ids = items.map((m) => m.id);
-			try {
-				await ctx.client.markDelivered(agentId, ids, {
-					[ACTING_AGENT_HEADER]: agentId,
-				});
-			} catch (e) {
-				console.warn("Failed to mark messages as delivered:", e);
+		// Auto-mark as delivered only the rows this page could actually account
+		// for. The mark is what takes a row out of `?status=new`, `/poll` and SSE
+		// catch-up, and there is no un-mark route — so acking a row that came back
+		// sealed spends the only remaining chance to open it, and an unattended
+		// poller is never offered it again. This listing used to ack the whole
+		// page, readable or not, which is why one ordinary browse destroyed retry
+		// eligibility for a message whose key material had not arrived yet. A row
+		// that did not open therefore stays `new` and is listed again.
+		//
+		// 🔴 The two PERMANENT classes are deliberate exceptions, and both are
+		// what this surface already did before the narrowing. Neither can ever
+		// change verdict, so leaving one `new` pins it at the head of every future
+		// listing forever — the log/IO backlog a drain policy exists to prevent —
+		// and it grows by one per such message with no verb here that can clear
+		// it. An authenticity refusal is bytes a signature will never come to
+		// cover; a never-ciphertext row (`rowNeverCiphertext`, core's
+		// `not-ciphertext` verdict) was not an envelope this build opens in the
+		// first place, the live instance being the `encryption_version: "none"`
+		// row A2A cleartext writes. Only the MAY-HEAL rows change behaviour: a key
+		// that has not arrived yet, a config dir with no key material, an
+		// unclassified throw.
+		//
+		// The predicate is positive (`rowOpened`) rather than `!decrypt_error`,
+		// because `openInboxRow` returns a row with NEITHER field in three classes
+		// that never opened — see `rowOpened`'s own note. Asking the two permanent
+		// questions explicitly is what keeps the remaining class from being
+		// decided by falling off the end of that list.
+		//
+		// 🔴 `new` ONLY, never `all`. On the `new` status this call IS the read — it
+		// hands the model decrypted bodies and the mark is what stops them arriving
+		// again. `all` is a browse over history, and it used to consume the unread
+		// mail sitting inside that history as a side effect: ask to see everything,
+		// silently spend every row you had not read yet. `rine-mastra` and
+		// `rine-eve` both already return before marking on any non-`new` status and
+		// both say so in their tool descriptions; this surface was the one that
+		// diverged, and nothing chose the divergence.
+		if (statusParam === "new") {
+			const ids = items
+				.filter(
+					(m) =>
+						rowOpened(m) || rowAuthenticityFailure(m) || rowNeverCiphertext(m),
+				)
+				.map((m) => m.id);
+			if (ids.length > 0) {
+				try {
+					await ctx.client.markDelivered(agentId, ids, {
+						[ACTING_AGENT_HEADER]: agentId,
+					});
+				} catch (e) {
+					console.warn("Failed to mark messages as delivered:", e);
+				}
 			}
 		}
 

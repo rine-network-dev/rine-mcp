@@ -64,4 +64,33 @@ describe("tool definitions", () => {
 			).toBe(ACTING_AGENT_PARAM.description);
 		}
 	});
+
+	// Peek is this server's decision about a row it could not open, never an
+	// argument the model chooses: a model that can ask for a read that consumes
+	// nothing can read the whole inbox and leave every row `new`, which is the
+	// one state a human operator reads as "nothing has happened here". Nothing
+	// else pins the absence — a `peek` property would be an ordinary-looking
+	// addition to a schema, and the tools' own tests would keep passing — so the
+	// negative is asserted here, over the whole registry, in the same place the
+	// registry's other shape rules live.
+	it("lets no tool take peek as a model-settable parameter", () => {
+		// Guards the guard: the loop must actually be reading schemas that carry
+		// properties, or an empty-properties registry would pass it vacuously.
+		const withProps = tools.filter(
+			(t) =>
+				Object.keys(
+					(t.inputSchema as { properties?: Record<string, unknown> })
+						.properties ?? {},
+				).length > 0,
+		);
+		expect(withProps.length).toBeGreaterThan(20);
+
+		for (const t of tools) {
+			const props = Object.keys(
+				(t.inputSchema as { properties?: Record<string, unknown> })
+					.properties ?? {},
+			);
+			expect(props, `${t.name} lets the model decide whether to peek`).not.toContain("peek");
+		}
+	});
 });

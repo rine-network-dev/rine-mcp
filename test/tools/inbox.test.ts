@@ -41,6 +41,31 @@ function makeInboxResponse(items: unknown[] = []) {
 	return { items, total: items.length, next_cursor: null, prev_cursor: null };
 }
 
+/**
+ * A row that OPENS.
+ *
+ * `rine_inbox` acks only the rows it could actually account for
+ * (`test/messaging-ack-readable.test.ts` pins both arms), so a fixture the
+ * decrypt never opened is deliberately no longer in the mark-delivered call.
+ * The two tests below are about the ack CALL — that it fires with the page's
+ * ids, and that a failure is swallowed — so their rows have to be readable
+ * ones, or they assert nothing.
+ */
+function openableRow(id: string) {
+	return { id, encryption_version: "hpke-v1", type: "rine.v1.dm", from_agent_id: "sender-uuid-1" };
+}
+
+/** Make the mocked 1:1 decrypt open whatever it is handed. */
+function opensForReal() {
+	mockAgentKeysExist.mockReturnValue(true);
+	mockDecryptMessage.mockResolvedValue({
+		plaintext: JSON.stringify({ text: "hi" }),
+		verified: true,
+		verificationStatus: "verified",
+		senderKid: "rine:sender-uuid-1",
+	});
+}
+
 describe("rine_inbox — status filter and auto-mark", () => {
 	beforeEach(() => {
 		mockResolveActor.mockReset();
@@ -80,10 +105,8 @@ describe("rine_inbox — status filter and auto-mark", () => {
 
 	it("calls markDelivered after fetching new messages", async () => {
 		const ctx = makeCtx();
-		const msgs = [
-			{ id: "msg-1", encryption_version: "none", type: "rine.v1.text" },
-			{ id: "msg-2", encryption_version: "none", type: "rine.v1.text" },
-		];
+		opensForReal();
+		const msgs = [openableRow("msg-1"), openableRow("msg-2")];
 		(ctx.client.get as ReturnType<typeof vi.fn>).mockResolvedValue(makeInboxResponse(msgs));
 		(ctx.client as unknown as { markDelivered: ReturnType<typeof vi.fn> }).markDelivered.mockResolvedValue({ marked: 2 });
 
@@ -129,7 +152,8 @@ describe("rine_inbox — status filter and auto-mark", () => {
 
 	it("markDelivered failure is non-fatal", async () => {
 		const ctx = makeCtx();
-		const msgs = [{ id: "msg-1", encryption_version: "none", type: "rine.v1.text" }];
+		opensForReal();
+		const msgs = [openableRow("msg-1")];
 		(ctx.client.get as ReturnType<typeof vi.fn>).mockResolvedValue(makeInboxResponse(msgs));
 		(ctx.client as unknown as { markDelivered: ReturnType<typeof vi.fn> }).markDelivered
 			.mockRejectedValue(new Error("network error"));
