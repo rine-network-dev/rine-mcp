@@ -16,16 +16,22 @@
 // and a later line that does want the value fails as a compile error naming this
 // import, not as anything at a distance.
 import {
+	ENCRYPTION_VERSION_HYBRID_V2,
+	a2aCleartextPayload,
+	isA2aCleartext,
 	isAuthenticityFailure,
+	isGroupEncryptionVersion,
 	isRefusedDecrypt,
 	type MessageDecryptResult,
+	markA2aCleartext,
+	type A2aCleartextMark,
 	type MessageRead,
 	type SENDER_KEY_UNAVAILABLE_CODE,
 	type VerificationStatus,
 } from "@rine-network/core";
 
 /** A message row the tools got a verdict on: that verdict, plus the body when trusted. */
-export type DecryptedRow = MessageRead & {
+export type DecryptedRow = MessageRead & Partial<A2aCleartextMark> & {
 	/** Absent on a row that stayed sealed for the one explained cause. */
 	verified?: boolean;
 	verification_status?: VerificationStatus;
@@ -59,20 +65,14 @@ export type DecryptedRow = MessageRead & {
 /** A row the tools hand back: opened with a verdict, or still sealed. */
 export type OpenedRow = MessageRead | DecryptedRow;
 
-/** Whether a row's envelope is a 1:1 HPKE seal. */
+/** Whether a row's envelope is a 1:1 hybrid HPKE seal. */
 export function isDirectEnvelope(msg: MessageRead): boolean {
-	return (
-		msg.encryption_version === "hpke-v1" ||
-		msg.encryption_version === "hpke-hybrid-v1"
-	);
+	return msg.encryption_version === ENCRYPTION_VERSION_HYBRID_V2;
 }
 
 /** Whether a row's envelope is a group seal, either encryption. */
 export function isGroupEnvelope(msg: MessageRead): boolean {
-	return (
-		msg.encryption_version === "sender-key-v1" ||
-		msg.encryption_version === "mls-v1"
-	);
+	return isGroupEncryptionVersion(msg.encryption_version);
 }
 
 /**
@@ -119,6 +119,21 @@ export function decryptedRow(
 		decrypted: JSON.parse(result.plaintext),
 		verified: result.verified,
 		verification_status: result.verificationStatus,
+	};
+}
+
+/**
+ * A row that was never ciphertext, handed back as it arrived. An A2A cleartext message
+ * additionally carries its posted parts as `decrypted`, flagged and never verified, so a
+ * model reads the same body the Python clients give as plaintext.
+ */
+export function arrivedRow(msg: MessageRead): OpenedRow {
+	if (!isA2aCleartext(msg)) return msg;
+	return {
+		...markA2aCleartext(msg),
+		decrypted: a2aCleartextPayload(msg),
+		verified: false,
+		verification_status: "unverifiable",
 	};
 }
 
@@ -170,7 +185,7 @@ export function rowAuthenticityFailure(row: OpenedRow): boolean {
  * `openInboxRow` hands such a row back unchanged, so without this question the
  * listing's ack filter decides its fate by falling off the end of two envelope
  * predicates — and the live instance of the shape is `encryption_version:
- * "none"`, which `src/rine/api/a2a.py` writes onto a real row for any agent
+ * "none"`, which `_create_a2a_message` in `src/rine/api/a2a_messages.py` writes onto a real row for any agent
  * whose A2A card sets `a2a_accept_cleartext`. No key arrival, no sweep and no
  * later listing will ever make one open, so leaving it `new` pins it at the head
  * of every future listing for the life of the agent, growing by one per inbound

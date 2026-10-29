@@ -9,7 +9,7 @@ import {
 	resumeMlsGroupAdmission,
 	sendGroupInviteNotification,
 } from "@rine-network/core";
-import { actingAgent } from "./group-actors.js";
+import { actingAgent } from "./tool-actors.js";
 import type { ToolContext } from "./types.js";
 
 /**

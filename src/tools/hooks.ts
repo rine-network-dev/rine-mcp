@@ -4,22 +4,18 @@
 // MCP tool (a never-returning relay would hang the stdio transport).
 //
 // FROZEN-CONTRACT: rine_hook_create generates the HMAC secret CLIENT-SIDE
-// (randomBytes(32) hex) and POSTs ONLY {hook_name} — never a secret. It persists
-// the secret 0600 under the MCP server's config dir and the result states WHERE
-// it was stored (the relay box may differ → point it there with --secret-file/
-// --secret-env). The secret appears in create output ONLY, never in list.
+// (randomBytes(32) hex) and POSTs ONLY {hook_name, tier: null} — never a secret.
+// It persists the secret 0600 under the MCP server's config dir and the result
+// states WHERE it was stored (the relay box may differ → point it there with
+// --secret-file/--secret-env). A failed create puts the local secret back the
+// way it was. The secret appears in create output ONLY, never in list.
 
-import {
-	type HookCreated,
-	deleteHookSecret,
-	generateHookSecret,
-	saveHookSecret,
-} from "@rine-network/core";
+import { createHook, deleteHookSecret } from "@rine-network/core";
 import {
 	ACTING_AGENT_PARAM,
 	actingAgent,
 	withActorNote,
-} from "./group-actors.js";
+} from "./tool-actors.js";
 import type { ToolDef } from "./types.js";
 
 const SIGNATURE_HEADER = "X-Hub-Signature-256";
@@ -49,12 +45,13 @@ const rineHookCreate: ToolDef = {
 		const acting = await actingAgent(ctx, p);
 		const agentId = acting.agentId;
 
-		// Generate + persist the secret locally; POST carries ONLY {hook_name}.
-		const secret = generateHookSecret();
-		const storedAt = saveHookSecret(ctx.configDir, agentId, name, secret);
-		const created = (await ctx.client.post(`/agents/${agentId}/funnel/hooks`, {
-			hook_name: name,
-		})) as HookCreated;
+		// No tier: the server resolves it from the org's trust tier.
+		const { created, secret, storedAt } = await createHook(
+			ctx.client,
+			ctx.configDir,
+			agentId,
+			name,
+		);
 
 		return withActorNote(
 			{

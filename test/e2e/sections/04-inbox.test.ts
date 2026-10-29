@@ -48,7 +48,7 @@ describe.skipIf(isProd())("04 — Inbox + Pagination", () => {
 		});
 		const items = result.items as Array<Record<string, unknown>>;
 		const hpke = items.filter(
-			(m) => m.encryption_version === "hpke-v1" && m.decrypted,
+			(m) => m.encryption_version === "hpke-hybrid-v2" && m.decrypted,
 		);
 		for (const msg of hpke) {
 			expect(msg.verified).toBe(true);

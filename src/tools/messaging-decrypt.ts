@@ -31,6 +31,7 @@ import {
 } from "@rine-network/core";
 import {
 	type OpenedRow,
+	arrivedRow,
 	decryptedRow,
 	isDirectEnvelope,
 	isGroupEnvelope,
@@ -68,6 +69,8 @@ export async function openInboxRow(
 				msg.encrypted_payload,
 				ctx.client,
 				msg.from_agent_id,
+				undefined,
+				msg.created_at,
 			);
 			ingestSenderKeyDistribution(ctx.configDir, agentId, msg.type, result);
 			return decryptedRow(msg, result);
@@ -85,10 +88,11 @@ export async function openInboxRow(
 				msg.encrypted_payload,
 				ctx.client,
 				msg.from_agent_id,
+				msg.created_at,
 			);
 			return decryptedRow(msg, result);
 		}
-		return msg;
+		return arrivedRow(msg);
 	} catch (err) {
 		// 🔴 A forged GROUP row lands here, not in `decryptedRow`: the 1:1 decrypt
 		// reports an authenticity refusal, the group decrypt throws it. So this
@@ -135,11 +139,11 @@ export async function openMessage(
 	agentId: string,
 	msg: MessageRead,
 ): Promise<OpenedRow> {
-	if (!agentKeysExist(ctx.configDir, agentId)) return msg;
+	if (!agentKeysExist(ctx.configDir, agentId)) return arrivedRow(msg);
 	// Without the sender the server authenticated there is nothing to check the
 	// envelope's claim of authorship against, so the message stays sealed.
 	const fromAgentId = msg.from_agent_id;
-	if (!fromAgentId) return msg;
+	if (!fromAgentId) return arrivedRow(msg);
 
 	try {
 		if (isDirectEnvelope(msg)) {
@@ -149,6 +153,8 @@ export async function openMessage(
 				msg.encrypted_payload,
 				ctx.client,
 				fromAgentId,
+				undefined,
+				msg.created_at,
 			);
 			return decryptedRow(msg, result);
 		}
@@ -160,6 +166,7 @@ export async function openMessage(
 				msg.group_id,
 				msg.encrypted_payload,
 				fromAgentId,
+				msg.created_at,
 			);
 			return decryptedRow(msg, result);
 		}
@@ -185,5 +192,5 @@ export async function openMessage(
 			};
 		}
 	}
-	return msg;
+	return arrivedRow(msg);
 }

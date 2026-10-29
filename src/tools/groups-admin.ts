@@ -1,9 +1,9 @@
 import { VOTE_ELECTORATE_RULE } from "@rine-network/core";
-import { ACTING_AGENT_PARAM, actingHeaders } from "./group-actors.js";
 import { asGroupAccessError } from "./group-eviction.js";
+import { GROUP_REF_PARAM, groupTarget } from "./group-ref.js";
 import { leaveGroup, removeGroupMember } from "./group-removal.js";
 import { voteOnRequest } from "./group-vote.js";
-import { GROUP_REF_PARAM, groupTarget } from "./group-ref.js";
+import { ACTING_AGENT_PARAM, actingHeaders } from "./tool-actors.js";
 import type { ToolDef } from "./types.js";
 
 const rineGroupRequests: ToolDef = {

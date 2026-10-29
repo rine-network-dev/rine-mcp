@@ -1,22 +1,18 @@
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-	AgentKeys,
-	MessageRead,
-	RecipientTarget,
-} from "@rine-network/core";
+import type { MessageRead, RecipientTarget } from "@rine-network/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "../../src/tools/types.js";
+import { keysGet, publishedKeys, seedAgentKeys } from "@rine-network/core/testing";
 
 const mockResolveRecipient = vi.fn();
 const mockResolveActor = vi.fn();
-const mockEncryptMessage = vi.fn();
+const mockSealForAgent = vi.fn();
 const mockEncryptGroupMessage = vi.fn();
-const mockFetchRecipientKeys = vi.fn();
 const mockGetOrCreateSenderKey = vi.fn();
 const mockAgentKeysExist = vi.fn();
-const mockEncryptMlsGroupMessage = vi.fn();
+const mockSealAndPost = vi.fn();
 // The downgrade guard reads real local MLS state off disk. These tests pin the
 // tool surface, not the guard (`messaging-send-downgrade.test.ts` does that),
 // and run against a throwaway config dir with no MLS store.
@@ -28,17 +24,16 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 		...orig,
 		resolveRecipient: (...args: unknown[]) => mockResolveRecipient(...args),
 		resolveActor: (...args: unknown[]) => mockResolveActor(...args),
-		encryptMessage: (...args: unknown[]) => mockEncryptMessage(...args),
+		sealForAgent: (...args: unknown[]) => mockSealForAgent(...args),
 		encryptGroupMessage: (...args: unknown[]) =>
 			mockEncryptGroupMessage(...args),
-		fetchRecipientKeys: (...args: unknown[]) => mockFetchRecipientKeys(...args),
 		getOrCreateSenderKey: (...args: unknown[]) =>
 			mockGetOrCreateSenderKey(...args),
 		agentKeysExist: (...args: unknown[]) => mockAgentKeysExist(...args),
 		assertNoMlsDowngrade: (...args: unknown[]) =>
 			mockAssertNoMlsDowngrade(...args),
-		encryptMlsGroupMessage: (...args: unknown[]) =>
-			mockEncryptMlsGroupMessage(...args),
+		sealAndPostMlsGroupMessage: (...args: unknown[]) =>
+			mockSealAndPost(...args),
 	};
 });
 
@@ -53,13 +48,9 @@ const {
 	encryptGroupMessage: realEncryptGroupMessage,
 	encryptMessage: realEncryptMessage,
 	fetchRecipientKeys: realFetchRecipientKeys,
-	generateAgentKeys,
 	generateSenderKey,
-	pqPublicKeyToJWK,
-	saveAgentKeys,
 	saveSenderKeyState,
-	signingPublicKeyToJWK,
-	toBase64Url,
+	sealForAgent: realSealForAgent,
 } = realCore;
 const {
 	SENDER_KEY_NOT_RECOVERED_PREVIEW,
@@ -68,21 +59,26 @@ const {
 } = realCore;
 
 const { messagingTools } = await import("../../src/tools/messaging.js");
-// `rine_thread` registers from its own module (`messaging-thread.ts`), which is
-// what makes it visible to the shipped-surface gate — `messagingTools` no longer
-// carries it, so it is imported from where it lives.
+// `rine_inbox`/`rine_read`, `rine_reply` and `rine_thread` each register from
+// their own module, which is what makes them visible to the shipped-surface
+// gate — `messagingTools` carries only `rine_send`, so each is imported from
+// where it lives.
+const { inboxTools } = await import("../../src/tools/messaging-inbox.js");
+const { replyTools } = await import("../../src/tools/messaging-reply.js");
 const { rineThread } = await import("../../src/tools/messaging-thread.js");
 
 const rineSend = messagingTools.find((t) => t.name === "rine_send")!;
-const rineInbox = messagingTools.find((t) => t.name === "rine_inbox")!;
-const rineRead = messagingTools.find((t) => t.name === "rine_read")!;
-const rineReply = messagingTools.find((t) => t.name === "rine_reply")!;
+const rineInbox = inboxTools.find((t) => t.name === "rine_inbox")!;
+const rineRead = inboxTools.find((t) => t.name === "rine_read")!;
+const rineReply = replyTools.find((t) => t.name === "rine_reply")!;
 
 function makeCtx(): ToolContext {
 	return {
 		client: { get: vi.fn(), post: vi.fn() } as never,
 		configDir: "/tmp/test",
+		ownerDir: "/tmp/test-owner",
 		apiUrl: "https://api.test",
+		refreshIdentity: vi.fn(),
 	};
 }
 
@@ -131,12 +127,11 @@ describe("rine_send — short-handle normalization", () => {
 	beforeEach(() => {
 		ladderAnswersForReal();
 		mockResolveActor.mockReset();
-		mockEncryptMessage.mockReset();
+		mockSealForAgent.mockReset();
 		mockEncryptGroupMessage.mockReset();
-		mockFetchRecipientKeys.mockReset();
 		mockGetOrCreateSenderKey.mockReset();
 		mockAgentKeysExist.mockReset();
-		mockEncryptMlsGroupMessage.mockReset();
+		mockSealAndPost.mockReset();
 	});
 
 	it("group with non-null mls_group_id routes through MLS encrypt, not sender keys", async () => {
@@ -152,11 +147,19 @@ describe("rine_send — short-handle normalization", () => {
 				},
 			],
 		});
-		mockEncryptMlsGroupMessage.mockResolvedValue({
-			encrypted_payload: "enc-mls",
-			encryption_version: "mls-v1",
-			sender_signing_kid: "kid-1",
-		});
+		mockSealAndPost.mockImplementation(
+			async (
+				_actor: unknown,
+				_groupId: string,
+				_payload: unknown,
+				post: (fields: object) => Promise<unknown>,
+			) =>
+				post({
+					encrypted_payload: "enc-mls",
+					encryption_version: "mls-v1",
+					escrow_fp: "ZmFrZS1mcA",
+				}),
+		);
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({
 			id: "msg-mls",
 		});
@@ -166,18 +169,19 @@ describe("rine_send — short-handle normalization", () => {
 			payload: { text: "hi" },
 		});
 
-		// MLS encrypt was called with the rine group UUID (group.id), never the latch.
-		expect(mockEncryptMlsGroupMessage).toHaveBeenCalledWith(
-			ctx.configDir,
-			"sender-uuid",
+		// The seal is keyed by the rine group UUID (group.id), never the latch.
+		expect(mockSealAndPost).toHaveBeenCalledWith(
+			{ configDir: ctx.configDir, agentId: "sender-uuid", client: ctx.client },
 			"group-uuid",
 			{ text: "hi" },
+			expect.any(Function),
 		);
 		expect(mockGetOrCreateSenderKey).not.toHaveBeenCalled();
 
 		const postBody = (ctx.client.post as ReturnType<typeof vi.fn>).mock
 			.calls[0]![1] as Record<string, unknown>;
 		expect(postBody.encryption_version).toBe("mls-v1");
+		expect(postBody.escrow_fp).toBe("ZmFrZS1mcA");
 		expect(postBody.to_handle).toBe("#dev@acmecorp.rine.network");
 	});
 
@@ -187,12 +191,9 @@ describe("rine_send — short-handle normalization", () => {
 		mockResolveRecipient.mockResolvedValue(
 			agentTarget("recipient-uuid", "alice@acmecorp.rine.network"),
 		);
-		mockFetchRecipientKeys.mockResolvedValue({
-			encryption: new Uint8Array(32),
-		});
-		mockEncryptMessage.mockResolvedValue({
+		mockSealForAgent.mockResolvedValue({
 			encrypted_payload: "enc",
-			encryption_version: "hpke-v1",
+			encryption_version: "hpke-hybrid-v2",
 		});
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({
 			id: "msg-1",
@@ -212,12 +213,9 @@ describe("rine_send — short-handle normalization", () => {
 		mockResolveRecipient.mockResolvedValue(
 			agentTarget("recipient-uuid", "alice@acmecorp.rine.network"),
 		);
-		mockFetchRecipientKeys.mockResolvedValue({
-			encryption: new Uint8Array(32),
-		});
-		mockEncryptMessage.mockResolvedValue({
+		mockSealForAgent.mockResolvedValue({
 			encrypted_payload: "enc",
-			encryption_version: "hpke-v1",
+			encryption_version: "hpke-hybrid-v2",
 		});
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({
 			id: "msg-1",
@@ -534,12 +532,9 @@ describe("rine_send — short-handle normalization", () => {
 		const uuid = "550e8400-e29b-41d4-a716-446655440000";
 		mockResolveActor.mockResolvedValue({ agentId: "sender-uuid" });
 		mockResolveRecipient.mockResolvedValue(agentTarget(uuid, uuid));
-		mockFetchRecipientKeys.mockResolvedValue({
-			encryption: new Uint8Array(32),
-		});
-		mockEncryptMessage.mockResolvedValue({
+		mockSealForAgent.mockResolvedValue({
 			encrypted_payload: "enc",
-			encryption_version: "hpke-v1",
+			encryption_version: "hpke-hybrid-v2",
 		});
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({
 			id: "msg-4",
@@ -559,12 +554,9 @@ describe("rine_send — short-handle normalization", () => {
 		mockResolveRecipient.mockResolvedValue(
 			agentTarget("recipient-uuid", "alice@acmecorp.rine.network"),
 		);
-		mockFetchRecipientKeys.mockResolvedValue({
-			encryption: new Uint8Array(32),
-		});
-		mockEncryptMessage.mockResolvedValue({
+		mockSealForAgent.mockResolvedValue({
 			encrypted_payload: "enc",
-			encryption_version: "hpke-v1",
+			encryption_version: "hpke-hybrid-v2",
 		});
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({
 			id: "msg-5",
@@ -581,16 +573,18 @@ describe("rine_send — short-handle normalization", () => {
 	});
 });
 
-// ── Phase A: PQ hybrid path regression (encryption_version "hpke-hybrid-v1") ──
+// ── Phase A: PQ hybrid path regression (encryption_version "hpke-hybrid-v2") ──
 // These drive a real PQ-capable recipient through the genuine encrypt/decrypt
-// code so the hybrid dispatch is actually exercised. If commit 180be82 were
-// reverted (send/reply dropping the pqEncryption arg, or inbox/read losing the
-// "hpke-hybrid-v1" branch), every assertion below would fail.
-describe("messaging — hpke-hybrid-v1 path", () => {
+// code so the hybrid dispatch is actually exercised. If the send/reply path
+// dropped the recipient's PQ key, or inbox/read lost the "hpke-hybrid-v2"
+// branch, every assertion below would fail.
+describe("messaging — hpke-hybrid-v2 path", () => {
 	// Real UUIDs: signing kid is `rine:${agentId}` and must parse as a UUID.
 	const SENDER_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 	const RECIPIENT_ID = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
-	// A peer that re-seals another agent's signed envelope and posts it as its own.
+	// A peer of the SAME fixture org that re-seals another agent's signed
+	// envelope and posts it as its own: the point is that the signer is not the
+	// server-authenticated sender, not that the resealer is a stranger.
 	const RESEALER_ID = "c3d4e5f6-a7b8-9012-cdef-123456789012";
 	// The server types this path parameter `uuid.UUID`, so a `conv-1` was never a
 	// value the transcript route could have answered — the fixture, not the
@@ -598,69 +592,52 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 	const CONV_ID = "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9";
 
 	let dir: string;
-	let senderKeys: AgentKeys;
-	let recipientKeys: AgentKeys;
 
 	function makeRealCtx(): ToolContext {
 		return {
 			client: { get: vi.fn(), post: vi.fn(), markDelivered: vi.fn() } as never,
 			configDir: dir,
+			ownerDir: join(dir, "owner"),
 			apiUrl: "https://api.test",
+			refreshIdentity: vi.fn(),
 		};
 	}
 
-	// JWK bundle the server would return from GET /agents/{id}/keys.
-	function keysResponse(agentId: string, keys: AgentKeys) {
-		const body: Record<string, unknown> = {
-			agent_id: agentId,
-			signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
-			encryption_public_key: {
-				kty: "OKP",
-				crv: "X25519",
-				x: toBase64Url(keys.encryption.publicKey),
-			},
-		};
-		if (keys.pqEncryption) {
-			body.pq_encryption_public_key = pqPublicKeyToJWK(
-				keys.pqEncryption.publicKey,
-			);
-		}
-		return body;
+	/** The recipient keys `fetchRecipientKeys` returns for a fixture-org agent. */
+	async function recipientKeysFor(agentId: string) {
+		const client = { get: async (path: string) => keysGet(path) } as never;
+		return realFetchRecipientKeys(client, agentId);
 	}
 
 	beforeEach(() => {
 		ladderAnswersForReal();
 		mockResolveActor.mockReset();
-		mockEncryptMessage.mockReset();
+		mockSealForAgent.mockReset();
 		mockEncryptGroupMessage.mockReset();
-		mockFetchRecipientKeys.mockReset();
 		mockGetOrCreateSenderKey.mockReset();
 		mockAgentKeysExist.mockReset();
 
 		// Delegate the mocked crypto entry points to their REAL implementations so
 		// the hybrid negotiation/dispatch genuinely runs end-to-end.
-		mockEncryptMessage.mockImplementation((...args: unknown[]) =>
-			(realEncryptMessage as (...a: unknown[]) => unknown)(...args),
-		);
-		mockFetchRecipientKeys.mockImplementation((...args: unknown[]) =>
-			(realFetchRecipientKeys as (...a: unknown[]) => unknown)(...args),
+		mockSealForAgent.mockImplementation((...args: unknown[]) =>
+			(realSealForAgent as (...a: unknown[]) => unknown)(...args),
 		);
 		mockAgentKeysExist.mockImplementation((...args: unknown[]) =>
 			(realAgentKeysExist as (...a: unknown[]) => unknown)(...args),
 		);
 
 		dir = fs.mkdtempSync(join(tmpdir(), "rine-mcp-hybrid-"));
-		senderKeys = generateAgentKeys();
-		recipientKeys = generateAgentKeys();
-		saveAgentKeys(dir, SENDER_ID, senderKeys);
-		saveAgentKeys(dir, RECIPIENT_ID, recipientKeys);
-		expect(recipientKeys.pqEncryption).toBeDefined();
+		seedAgentKeys(dir, SENDER_ID);
+		seedAgentKeys(dir, RECIPIENT_ID);
+		seedAgentKeys(dir, RESEALER_ID);
+		// Every fixture agent publishes a post-quantum key, so every seal is hybrid.
+		expect(publishedKeys(RECIPIENT_ID).pq_encryption_public_key).toBeDefined();
 	});
 
 	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 	// rine_send to a PQ-capable recipient must negotiate hybrid.
-	it("rine_send emits encryption_version hpke-hybrid-v1 when the recipient has a PQ key", async () => {
+	it("rine_send emits encryption_version hpke-hybrid-v2 when the recipient has a PQ key", async () => {
 		const ctx = makeRealCtx();
 		mockResolveActor.mockResolvedValue({ agentId: SENDER_ID });
 		// Real fetchRecipientKeys reads the recipient's published PQ key from
@@ -673,7 +650,7 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 			(path: string) =>
 				path.startsWith("/groups/")
 					? Promise.reject(new realCore.RineApiError(404, "Group not found"))
-					: Promise.resolve(keysResponse(RECIPIENT_ID, recipientKeys)),
+					: Promise.resolve(publishedKeys(RECIPIENT_ID)),
 		);
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({
 			id: "msg-1",
@@ -686,13 +663,17 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 
 		const postBody = (ctx.client.post as ReturnType<typeof vi.fn>).mock
 			.calls[0]![1] as Record<string, unknown>;
-		expect(postBody.encryption_version).toBe("hpke-hybrid-v1");
-		expect(postBody.encryption_version).not.toBe("hpke-v1");
+		expect(postBody.encryption_version).toBe("hpke-hybrid-v2");
+		expect(postBody.encryption_version).not.toBe("hpke-hybrid-v1");
 		expect(typeof postBody.encrypted_payload).toBe("string");
+		expect(mockSealForAgent.mock.calls[0]![2]).toEqual({
+			senderAgentId: SENDER_ID,
+			recipientAgentId: RECIPIENT_ID,
+		});
 	});
 
 	// rine_reply must carry the recipient's PQ key into encryptMessage too.
-	it("rine_reply emits encryption_version hpke-hybrid-v1 when the original sender has a PQ key", async () => {
+	it("rine_reply emits encryption_version hpke-hybrid-v2 when the original sender has a PQ key", async () => {
 		const ctx = makeRealCtx();
 		// Replying as RECIPIENT_ID back to the original sender (SENDER_ID), who is PQ-capable.
 		(ctx.client.get as ReturnType<typeof vi.fn>).mockImplementation(
@@ -706,7 +687,7 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 					});
 				}
 				// fetchRecipientKeys for the reply target (the original sender).
-				return Promise.resolve(keysResponse(SENDER_ID, senderKeys));
+				return Promise.resolve(publishedKeys(SENDER_ID));
 			},
 		);
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -720,23 +701,28 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 
 		const postBody = (ctx.client.post as ReturnType<typeof vi.fn>).mock
 			.calls[0]![1] as Record<string, unknown>;
-		expect(postBody.encryption_version).toBe("hpke-hybrid-v1");
-		expect(postBody.encryption_version).not.toBe("hpke-v1");
+		expect(postBody.encryption_version).toBe("hpke-hybrid-v2");
+		expect(postBody.encryption_version).not.toBe("hpke-hybrid-v1");
+		// Sealed by the agent the original was addressed to, back to its sender.
+		expect(mockSealForAgent.mock.calls[0]![2]).toEqual({
+			senderAgentId: RECIPIENT_ID,
+			recipientAgentId: SENDER_ID,
+		});
 	});
 
-	// rine_inbox must decrypt a real hpke-hybrid-v1 message, not return it raw.
-	it("rine_inbox decrypts an hpke-hybrid-v1 message to its real plaintext", async () => {
+	// rine_inbox must decrypt a real hpke-hybrid-v2 message, not return it raw.
+	it("rine_inbox decrypts an hpke-hybrid-v2 message to its real plaintext", async () => {
 		const ctx = makeRealCtx();
 		const payload = { task: "translate", text: "post-quantum" };
 		// Real encrypt: SENDER → RECIPIENT, hybrid because recipient has a PQ key.
 		const enc = await realEncryptMessage(
 			dir,
 			SENDER_ID,
-			recipientKeys.encryption.publicKey,
+			RECIPIENT_ID,
+			await recipientKeysFor(RECIPIENT_ID),
 			payload,
-			recipientKeys.pqEncryption!.publicKey,
 		);
-		expect(enc.encryption_version).toBe("hpke-hybrid-v1");
+		expect(enc.encryption_version).toBe("hpke-hybrid-v2");
 
 		const msg = {
 			id: "inbox-msg-1",
@@ -744,6 +730,7 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 			from_agent_id: SENDER_ID,
 			encryption_version: enc.encryption_version,
 			encrypted_payload: enc.encrypted_payload,
+			created_at: new Date().toISOString(),
 		};
 
 		mockResolveActor.mockResolvedValue({ agentId: RECIPIENT_ID });
@@ -754,7 +741,7 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 				if (path === `/agents/${RECIPIENT_ID}/messages`) {
 					return Promise.resolve({ items: [msg], next_cursor: null });
 				}
-				return Promise.resolve(keysResponse(SENDER_ID, senderKeys));
+				return Promise.resolve(publishedKeys(SENDER_ID));
 			},
 		);
 
@@ -770,18 +757,18 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 		expect(out.verified).toBe(true);
 	});
 
-	// rine_read must decrypt a single hpke-hybrid-v1 message, not return it raw.
-	it("rine_read decrypts a single hpke-hybrid-v1 message to its real plaintext", async () => {
+	// rine_read must decrypt a single hpke-hybrid-v2 message, not return it raw.
+	it("rine_read decrypts a single hpke-hybrid-v2 message to its real plaintext", async () => {
 		const ctx = makeRealCtx();
 		const payload = { msg: "lattice forever" };
 		const enc = await realEncryptMessage(
 			dir,
 			SENDER_ID,
-			recipientKeys.encryption.publicKey,
+			RECIPIENT_ID,
+			await recipientKeysFor(RECIPIENT_ID),
 			payload,
-			recipientKeys.pqEncryption!.publicKey,
 		);
-		expect(enc.encryption_version).toBe("hpke-hybrid-v1");
+		expect(enc.encryption_version).toBe("hpke-hybrid-v2");
 
 		mockResolveActor.mockResolvedValue({ agentId: RECIPIENT_ID });
 		(ctx.client.get as ReturnType<typeof vi.fn>).mockImplementation(
@@ -793,9 +780,10 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 						from_agent_id: SENDER_ID,
 						encryption_version: enc.encryption_version,
 						encrypted_payload: enc.encrypted_payload,
+						created_at: new Date().toISOString(),
 					});
 				}
-				return Promise.resolve(keysResponse(SENDER_ID, senderKeys));
+				return Promise.resolve(publishedKeys(SENDER_ID));
 			},
 		);
 
@@ -813,9 +801,9 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 		const enc = await realEncryptMessage(
 			dir,
 			SENDER_ID,
-			recipientKeys.encryption.publicKey,
+			RECIPIENT_ID,
+			await recipientKeysFor(RECIPIENT_ID),
 			{ msg: "unattributable" },
-			recipientKeys.pqEncryption!.publicKey,
 		);
 
 		mockResolveActor.mockResolvedValue({ agentId: RECIPIENT_ID });
@@ -827,9 +815,10 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 						type: "rine.v1.dm",
 						encryption_version: enc.encryption_version,
 						encrypted_payload: enc.encrypted_payload,
+						created_at: new Date().toISOString(),
 					});
 				}
-				return Promise.resolve(keysResponse(SENDER_ID, senderKeys));
+				return Promise.resolve(publishedKeys(SENDER_ID));
 			},
 		);
 
@@ -850,9 +839,9 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 		const enc = await realEncryptMessage(
 			dir,
 			SENDER_ID,
-			recipientKeys.encryption.publicKey,
+			RECIPIENT_ID,
+			await recipientKeysFor(RECIPIENT_ID),
 			payload,
-			recipientKeys.pqEncryption!.publicKey,
 		);
 
 		mockResolveActor.mockResolvedValue({ agentId: RECIPIENT_ID });
@@ -868,9 +857,10 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 						sender_signing_kid: `rine:${SENDER_ID}`,
 						encryption_version: enc.encryption_version,
 						encrypted_payload: enc.encrypted_payload,
+						created_at: new Date().toISOString(),
 					});
 				}
-				return Promise.resolve(keysResponse(SENDER_ID, senderKeys));
+				return Promise.resolve(publishedKeys(SENDER_ID));
 			},
 		);
 
@@ -895,17 +885,17 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 		const sent = await realEncryptMessage(
 			dir,
 			RECIPIENT_ID,
-			senderKeys.encryption.publicKey,
+			SENDER_ID,
+			await recipientKeysFor(SENDER_ID),
 			{ text: "my question" },
-			senderKeys.pqEncryption!.publicKey,
 		);
 		// Turn 2: the peer (SENDER) RECEIVED-side reply to us, sealed to our key.
 		const received = await realEncryptMessage(
 			dir,
 			SENDER_ID,
-			recipientKeys.encryption.publicKey,
+			RECIPIENT_ID,
+			await recipientKeysFor(RECIPIENT_ID),
 			{ text: "their answer" },
-			recipientKeys.pqEncryption!.publicKey,
 		);
 
 		const page = {
@@ -915,11 +905,13 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 					type: "rine.v1.task_request",
 					direction: "sent",
 					from_agent_id: RECIPIENT_ID,
+					// The self-sealed copy is bound to the recipient the sender addressed.
+					to_agent_id: SENDER_ID,
 					sender_handle: "me@org",
 					encryption_version: sent.encryption_version,
 					encrypted_payload: sent.encrypted_payload,
 					self_encrypted_payload: sent.self_encrypted_payload,
-					created_at: "2026-06-20T00:00:00Z",
+					created_at: new Date().toISOString(),
 				},
 				{
 					id: "t2",
@@ -929,7 +921,7 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 					sender_handle: "alice@org",
 					encryption_version: received.encryption_version,
 					encrypted_payload: received.encrypted_payload,
-					created_at: "2026-06-20T00:00:01Z",
+					created_at: new Date().toISOString(),
 				},
 				{
 					id: "t3",
@@ -937,9 +929,9 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 					direction: "received",
 					from_agent_id: SENDER_ID,
 					sender_handle: "alice@org",
-					encryption_version: "hpke-v1",
+					encryption_version: "hpke-hybrid-v2",
 					encrypted_payload: "AAAA",
-					created_at: "2026-06-20T00:00:02Z",
+					created_at: new Date().toISOString(),
 				},
 				{
 					// The peer's own signed reply, re-sealed verbatim by a third agent
@@ -967,9 +959,9 @@ describe("messaging — hpke-hybrid-v1 path", () => {
 				// Signature verification fetches the signer's pubkeys: the sent turn was
 				// signed by us (RECIPIENT_ID), the received turn by the peer (SENDER_ID).
 				if (path.includes(RECIPIENT_ID)) {
-					return Promise.resolve(keysResponse(RECIPIENT_ID, recipientKeys));
+					return Promise.resolve(publishedKeys(RECIPIENT_ID));
 				}
-				return Promise.resolve(keysResponse(SENDER_ID, senderKeys));
+				return Promise.resolve(publishedKeys(SENDER_ID));
 			},
 		);
 
@@ -1017,13 +1009,14 @@ describe("messaging — sender-key-unavailable (group)", () => {
 	const CONV_ID = "1b2c3d4e-5f60-7182-93a4-b5c6d7e8f901";
 
 	let dir: string;
-	let senderKeys: AgentKeys;
 
 	function makeRealCtx(): ToolContext {
 		return {
 			client: { get: vi.fn(), post: vi.fn(), markDelivered: vi.fn() } as never,
 			configDir: dir,
+			ownerDir: join(dir, "owner"),
 			apiUrl: "https://api.test",
+			refreshIdentity: vi.fn(),
 		};
 	}
 
@@ -1076,9 +1069,8 @@ describe("messaging — sender-key-unavailable (group)", () => {
 		);
 
 		dir = fs.mkdtempSync(join(tmpdir(), "rine-mcp-ch6-"));
-		senderKeys = generateAgentKeys();
-		saveAgentKeys(dir, SENDER_ID, senderKeys);
-		saveAgentKeys(dir, RECIPIENT_ID, generateAgentKeys());
+		seedAgentKeys(dir, SENDER_ID);
+		seedAgentKeys(dir, RECIPIENT_ID);
 	});
 
 	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));

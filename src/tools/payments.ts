@@ -19,69 +19,20 @@ import {
 	X402Error,
 	X402_ERROR,
 	X402_MESSAGE_TYPE,
-	agentKeysExist,
 	buildPaymentMessage,
 	buildPaymentPayload,
-	decryptMessage,
-	encryptMessage,
-	fetchRecipientKeys,
 	isAutoPayable,
 	loadPolicy,
 	loadWalletKey,
-	parseX402Payload,
 	readDailySpent,
-	requireAuthenticPlaintext,
 	reserveSpend,
+	sealForAgent,
 	selectRequirement,
 	walletKeyExists,
 } from "@rine-network/core";
-import { actingHeaders } from "./group-actors.js";
-import type { ToolContext, ToolDef } from "./types.js";
-
-/** Terminal outcome statuses of rine_pay (typed — never a bare string). */
-const PAY_STATUS = {
-	SUBMITTED: "payment-submitted",
-	NO_WALLET: "no-wallet",
-	NOT_PAYMENT_REQUIRED: "not-payment-required",
-	POLICY_REFUSED: "policy-refused",
-	ABOVE_AUTO_PAY_THRESHOLD: "above-auto-pay-threshold",
-	ALREADY_PAID: "already-paid",
-	WALLET_BUSY: "wallet-busy",
-	INAUTHENTIC_QUOTE: "inauthentic-quote",
-} as const;
-
-/**
- * Decrypt the quote message body into its verbatim `PaymentRequired` object.
- *
- * `payeeAgentId` is the quote's server-authenticated sender, which the
- * envelope's signing key is checked against.
- */
-async function readQuote(
-	ctx: ToolContext,
-	agentId: string,
-	original: MessageRead,
-	payeeAgentId: string,
-): Promise<PaymentRequired> {
-	if (!agentKeysExist(ctx.configDir, agentId)) {
-		throw new Error(
-			`No local keys for agent ${agentId} — cannot decrypt the quote.`,
-		);
-	}
-	const decrypted = await decryptMessage(
-		ctx.configDir,
-		agentId,
-		original.encrypted_payload,
-		ctx.client,
-		payeeAgentId,
-	);
-	// A quote is only the payee's word when the payee signed it: an envelope
-	// re-sealed by a third party is refused here, before the wallet is asked to
-	// sign an authorization against its terms.
-	return parseX402Payload(
-		original.type,
-		requireAuthenticPlaintext(decrypted, payeeAgentId, original.id),
-	) as PaymentRequired;
-}
+import { actingHeaders } from "./tool-actors.js";
+import type { ToolDef } from "./types.js";
+import { PAY_STATUS, quoteRefusal, readQuote } from "./x402-quote.js";
 
 const rinePay: ToolDef = {
 	name: "rine_pay",
@@ -99,7 +50,9 @@ const rinePay: ToolDef = {
 		"`not-payment-required` / `policy-refused` / `above-auto-pay-threshold` / " +
 		"`already-paid` / `wallet-busy` / `inauthentic-quote` (the quote's envelope was " +
 		"not signed by the agent the server authenticated as its sender — nothing is " +
-		"signed and nothing is spent). It does NOT wait for settlement: the receipt " +
+		"signed and nothing is spent) / `sender-unverifiable` (the sender's signing key " +
+		"could not be read, so the quote could not be checked — nothing is signed and " +
+		"nothing is spent; retry later). It does NOT wait for settlement: the receipt " +
 		"arrives later as an ordinary inbox message (read it with rine_read / " +
 		"rine_inbox / rine_thread).",
 	inputSchema: {
@@ -140,7 +93,7 @@ const rinePay: ToolDef = {
 		const messageId = String(p.message_id);
 		// The payer is read OUT of the quote below (`original.to_agent_id`), so
 		// the read cannot name the actor from its arguments — hence the lazy rung
-		// (`actingHeaders`, see its JSDoc in `group-actors.ts`).
+		// (`actingHeaders`, see its JSDoc in `tool-actors.ts`).
 		const original = (await ctx.client.get(
 			`/messages/${messageId}`,
 			{},
@@ -173,18 +126,8 @@ const rinePay: ToolDef = {
 		try {
 			pr = await readQuote(ctx, agentId, original, recipientId);
 		} catch (err) {
-			if (
-				err instanceof X402Error &&
-				err.code === X402_ERROR.INAUTHENTIC_SENDER
-			) {
-				// Not a parse failure: the quote is attributed to an agent that did
-				// not sign it, so there is nothing here this wallet may pay.
-				return {
-					status: PAY_STATUS.INAUTHENTIC_QUOTE,
-					reason: err.code,
-					detail: err.message,
-				};
-			}
+			const refusal = quoteRefusal(err);
+			if (refusal) return refusal;
 			return {
 				status: PAY_STATUS.NOT_PAYMENT_REQUIRED,
 				detail: `Could not parse a PaymentRequired from ${messageId}: ${
@@ -244,13 +187,11 @@ const rinePay: ToolDef = {
 			emitMarker: p.emit_marker !== false,
 		});
 
-		const recipientKeys = await fetchRecipientKeys(ctx.client, recipientId);
-		const encrypted = await encryptMessage(
+		const encrypted = await sealForAgent(
+			ctx.client,
 			ctx.configDir,
-			agentId,
-			recipientKeys.encryption,
+			{ senderAgentId: agentId, recipientAgentId: recipientId },
 			built.payload,
-			recipientKeys.pqEncryption,
 		);
 
 		const body: Record<string, unknown> = {

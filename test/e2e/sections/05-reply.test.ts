@@ -40,7 +40,7 @@ describe.skipIf(isProd())("05 — Reply + Conversations", () => {
 			payload: { result: "approved" },
 		});
 		expect(result.id).toBeTruthy();
-		expect(result.encryption_version).toBe("hpke-v1");
+		expect(result.encryption_version).toBe("hpke-hybrid-v2");
 	});
 
 	it("5.2 Reply preserves conversation_id", async () => {

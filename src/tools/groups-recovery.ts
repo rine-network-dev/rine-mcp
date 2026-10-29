@@ -1,7 +1,7 @@
-import { ACTING_AGENT_PARAM } from "./group-actors.js";
 import { reclaimGroupLeaves } from "./group-reclaim.js";
 import { syncGroupState } from "./group-sync.js";
 import { GROUP_REF_PARAM } from "./group-ref.js";
+import { ACTING_AGENT_PARAM } from "./tool-actors.js";
 import type { ToolDef } from "./types.js";
 
 const rineGroupSync: ToolDef = {
@@ -10,13 +10,16 @@ const rineGroupSync: ToolDef = {
 		"Catch this agent's encryption state up with a group it can no longer " +
 		"read, and report what that cost. Closed, majority and unanimity groups " +
 		"run post-quantum MLS and have an epoch chain: the cheap rung replays the " +
-		"commits the group stored and posts nothing; the expensive rung posts one " +
-		"external commit that is O(N) and is billed to every member. An open " +
+		"commits the group stored and posts nothing itself; the expensive rung " +
+		"posts one external commit that is O(N) and is billed to every member. " +
+		"An open " +
 		"group runs Sender Keys and has no epoch chain, so there this installs " +
 		"the sender keys this agent is missing — the ones waiting in its own " +
 		"inbox — and posts nothing at all. Either way the answer names which " +
-		"ran. A group created to run MLS whose ratchet tree was never founded " +
-		"runs Sender Keys too, so it gets that same install, and the answer " +
+		"ran. On MLS, either rung ends by moving this agent's own leaf to its " +
+		"current key, which can post one path-only commit, and the answer says " +
+		"where that leaf now stands. A group created to run MLS whose ratchet " +
+		"tree was never founded runs Sender Keys too, so it gets that same install, and the answer " +
 		"additionally warns that the group has not got the MLS it was created " +
 		"for — a member has to found the group's MLS state, and no verb here " +
 		"does that.",
@@ -42,8 +45,7 @@ const rineGroupReclaim: ToolDef = {
 		"and it takes membership and no role beyond it, so any member may. It " +
 		"costs one Remove commit per leaf, each O(N) and billed to every member, " +
 		"which is why it is a call and not a background chore. Seats anyone " +
-		"entitled to a leaf who has none first, so an agent that rotated its " +
-		"signing key is re-seated rather than dropped. Closed, majority and " +
+		"entitled to a leaf who has none first. Closed, majority and " +
 		"unanimity groups have a ratchet tree; an open group runs Sender Keys and " +
 		"has none.",
 	inputSchema: {

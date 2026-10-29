@@ -6,21 +6,22 @@
 //
 // FROZEN-CONTRACT (a violation is a build defect):
 //  - rine_hook_create generates the HMAC secret CLIENT-SIDE (randomBytes(32) hex)
-//    and POSTs ONLY {hook_name} — never a secret. It persists the secret locally
-//    and the response states WHERE it was stored (so a relay on another box can
-//    be pointed there). The secret appears in create output ONLY, never in list.
+//    and POSTs ONLY {hook_name, tier: null} — never a secret. It persists the
+//    secret locally and the response states WHERE it was stored (so a relay on
+//    another box can be pointed there). A failed create leaves the local secret
+//    as it was. The secret appears in create output ONLY, never in list.
 //  - No rine_relay / rine_funnel / rine_tunnel EXECUTION tool is registered.
 //  - rine_funnel_status (if shipped) returns hostnames + active only (live flag
 //    deferred per a ratified decision).
 //  - HOOK_DNS_API_TOKEN never appears in this surface (server-side only).
 //
-// All externals are MOCKED (the @rine-network/core boundary + node:fs). The tool
-// module `../../src/tools/hooks.js` does NOT exist yet;
-// these MUST fail now for the right reason (missing module / missing export).
+// The @rine-network/core actor resolution is mocked; the secret store runs on a
+// real temp config dir.
 
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { funnelSecretDir, hookSecretPath } from "@rine-network/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "../../src/tools/types.js";
 
@@ -88,7 +89,9 @@ afterEach(() => {
 // ── rine_hook_create ────────────────────────────────────────────
 
 describe("rine_hook_create", () => {
-	it("POSTs ONLY {hook_name} — no secret key in the request body", async () => {
+	// `tier: null` is the server's "omitted": `HookCreate.tier` defaults to None
+	// and the org's trust tier picks the termination.
+	it("POSTs ONLY {hook_name, tier: null} — no secret key in the request body", async () => {
 		const ctx = makeCtx();
 		(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue(
 			hookCreated(),
@@ -98,7 +101,7 @@ describe("rine_hook_create", () => {
 
 		const [, body] =
 			(ctx.client.post as ReturnType<typeof vi.fn>).mock.calls[0] ?? [];
-		expect(body).toEqual({ hook_name: "github" });
+		expect(body).toEqual({ hook_name: "github", tier: null });
 		expect(Object.keys(body as object)).not.toContain("secret");
 		expect(JSON.stringify(body)).not.toMatch(/[0-9a-f]{64}/);
 	});
@@ -137,6 +140,39 @@ describe("rine_hook_create", () => {
 		expect(fs.readFileSync(p, "utf-8").trim()).toMatch(/^[0-9a-f]{64}$/);
 	});
 
+	it("leaves no orphan secret behind when the create POST fails for a new name", async () => {
+		const ctx = makeCtx();
+		const refusal = new Error("409 hook name taken");
+		(ctx.client.post as ReturnType<typeof vi.fn>).mockRejectedValue(refusal);
+
+		await expect(create.handler(ctx, { name: "github" })).rejects.toBe(
+			refusal,
+		);
+
+		const p = hookSecretPath(CONFIG_DIR, AGENT_ID, "github");
+		expect(fs.existsSync(p)).toBe(false);
+	});
+
+	it("keeps the prior secret of an existing hook when the create POST fails", async () => {
+		const ctx = makeCtx();
+		fs.mkdirSync(funnelSecretDir(CONFIG_DIR, AGENT_ID), {
+			recursive: true,
+			mode: 0o700,
+		});
+		const p = hookSecretPath(CONFIG_DIR, AGENT_ID, "github");
+		const prior = "e".repeat(64);
+		fs.writeFileSync(p, prior, { mode: 0o600 });
+		(ctx.client.post as ReturnType<typeof vi.fn>).mockRejectedValue(
+			new Error("503"),
+		);
+
+		await expect(create.handler(ctx, { name: "github" })).rejects.toThrow(
+			"503",
+		);
+
+		expect(fs.readFileSync(p, "utf-8").trim()).toBe(prior);
+	});
+
 	it("inputSchema accepts optional name and agent", () => {
 		const props = (
 			create.inputSchema as { properties: Record<string, unknown> }
@@ -152,13 +188,13 @@ describe("rine_hook_list", () => {
 	it("GETs the funnel-hook list and the result carries no secret field", async () => {
 		const ctx = makeCtx();
 		// Pre-seed a local secret to prove list never reads/returns it.
-		fs.mkdirSync(join(CONFIG_DIR, "funnel", AGENT_ID), {
+		fs.mkdirSync(funnelSecretDir(CONFIG_DIR, AGENT_ID), {
 			recursive: true,
 			mode: 0o700,
 		});
 		const sentinel = "c".repeat(64);
 		fs.writeFileSync(
-			join(CONFIG_DIR, "funnel", AGENT_ID, "github.secret"),
+			hookSecretPath(CONFIG_DIR, AGENT_ID, "github"),
 			sentinel,
 		);
 		(ctx.client.get as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -188,11 +224,11 @@ describe("rine_hook_list", () => {
 describe("rine_hook_delete", () => {
 	it("DELETEs the named hook, returns {ok:true}, and purges the local secret", async () => {
 		const ctx = makeCtx();
-		fs.mkdirSync(join(CONFIG_DIR, "funnel", AGENT_ID), {
+		fs.mkdirSync(funnelSecretDir(CONFIG_DIR, AGENT_ID), {
 			recursive: true,
 			mode: 0o700,
 		});
-		const p = join(CONFIG_DIR, "funnel", AGENT_ID, "github.secret");
+		const p = hookSecretPath(CONFIG_DIR, AGENT_ID, "github");
 		fs.writeFileSync(p, "d".repeat(64));
 		(ctx.client.delete as ReturnType<typeof vi.fn>).mockResolvedValue(
 			undefined,

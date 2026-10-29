@@ -13,8 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "../../src/tools/types.js";
 
 const mockDecryptMessage = vi.fn();
-const mockEncryptMessage = vi.fn();
-const mockFetchRecipientKeys = vi.fn();
+const mockSealForAgent = vi.fn();
 const mockAgentKeysExist = vi.fn();
 
 vi.mock("@rine-network/core", async (importOriginal) => {
@@ -22,8 +21,7 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 	return {
 		...orig,
 		decryptMessage: (...a: unknown[]) => mockDecryptMessage(...a),
-		encryptMessage: (...a: unknown[]) => mockEncryptMessage(...a),
-		fetchRecipientKeys: (...a: unknown[]) => mockFetchRecipientKeys(...a),
+		sealForAgent: (...a: unknown[]) => mockSealForAgent(...a),
 		agentKeysExist: (...a: unknown[]) => mockAgentKeysExist(...a),
 	};
 });
@@ -72,7 +70,8 @@ function quoteMessage(
 		to_agent_id: PAYER_ID,
 		from_agent_id: PAYEE_ID,
 		encrypted_payload: "CIPHERTEXT",
-		encryption_version: "hpke-v1",
+		created_at: "2026-10-01T12:00:00Z",
+		encryption_version: "hpke-hybrid-v2",
 		...over,
 	};
 }
@@ -111,13 +110,9 @@ function primePayable(
 		verified: true,
 		verificationStatus: "verified",
 	});
-	mockFetchRecipientKeys.mockResolvedValue({
-		encryption: {},
-		pqEncryption: {},
-	});
-	mockEncryptMessage.mockResolvedValue({
+	mockSealForAgent.mockResolvedValue({
 		encrypted_payload: "ENC",
-		encryption_version: "hpke-v1",
+		encryption_version: "hpke-hybrid-v2",
 		sender_signing_kid: "kid-1",
 	});
 	(ctx.client.post as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -129,8 +124,7 @@ function primePayable(
 beforeEach(() => {
 	CONFIG_DIR = fs.mkdtempSync(join(tmpdir(), "rine-mcp-pay-test-"));
 	mockDecryptMessage.mockReset();
-	mockEncryptMessage.mockReset();
-	mockFetchRecipientKeys.mockReset();
+	mockSealForAgent.mockReset();
 	mockAgentKeysExist.mockReset();
 });
 
@@ -183,6 +177,19 @@ describe("rine_pay — happy path", () => {
 		expect(mockDecryptMessage.mock.calls[0]![4]).toBe(PAYEE_ID);
 	});
 
+	it("opens the quote against the instant the server stamped on it", async () => {
+		const ctx = makeCtx();
+		createWallet(CONFIG_DIR, PAYER_ID);
+		savePolicy(CONFIG_DIR, PAYER_ID, policy());
+		primePayable(ctx, quotePayload());
+
+		await rinePay.handler(ctx, { message_id: QUOTE_ID });
+
+		expect(mockDecryptMessage.mock.calls[0]![6]).toBe(
+			"2026-10-01T12:00:00Z",
+		);
+	});
+
 	it("signs the ACTUAL PaymentPayload (real EIP-3009 signature) before encrypting", async () => {
 		const ctx = makeCtx();
 		createWallet(CONFIG_DIR, PAYER_ID);
@@ -191,8 +198,8 @@ describe("rine_pay — happy path", () => {
 
 		await rinePay.handler(ctx, { message_id: QUOTE_ID });
 
-		// The object handed to encryptMessage is the verbatim signed PaymentPayload.
-		const signed = mockEncryptMessage.mock.calls[0]![3] as {
+		// The object handed to sealForAgent is the verbatim signed PaymentPayload.
+		const signed = mockSealForAgent.mock.calls[0]![3] as {
 			accepted: { payTo: string };
 			payload: {
 				signature: string;
@@ -203,6 +210,11 @@ describe("rine_pay — happy path", () => {
 		expect(signed.payload.signature).toMatch(/^0x[0-9a-f]{130}$/);
 		expect(signed.payload.authorization.to).toBe(PAY_TO);
 		expect(signed.payload.authorization.value).toBe("100000");
+		// Sealed by the payer, scoped to the payee who authored the quote.
+		expect(mockSealForAgent.mock.calls[0]![2]).toEqual({
+			senderAgentId: PAYER_ID,
+			recipientAgentId: PAYEE_ID,
+		});
 	});
 
 	it("stamps the answered quote's message-id into the signed payload", async () => {
@@ -215,7 +227,7 @@ describe("rine_pay — happy path", () => {
 
 		// The payee binds settlement to THIS quote via the signed, E2EE extensions;
 		// the ref is the quote message id this tool paid (never a bare string literal).
-		const signed = mockEncryptMessage.mock.calls[0]![3] as {
+		const signed = mockSealForAgent.mock.calls[0]![3] as {
 			extensions: Record<string, unknown>;
 		};
 		expect(signed.extensions[X402_QUOTE_REF_KEY]).toBe(QUOTE_ID);
@@ -458,6 +470,24 @@ describe("rine_pay — sender binding on the money path", () => {
 		expect(result.status).toBe("inauthentic-quote");
 		expect(result.reason).toBe("inauthentic-sender");
 		expect(String(result.detail)).toContain(RESEALER_ID);
+		expect(ctx.client.post).not.toHaveBeenCalled();
+		expect(readDailySpent(CONFIG_DIR, PAYER_ID)).toBe(0n);
+	});
+
+	it("returns sender-unverifiable for a quote whose sender could not be verified, and spends nothing", async () => {
+		const ctx = makeCtx();
+		createWallet(CONFIG_DIR, PAYER_ID);
+		savePolicy(CONFIG_DIR, PAYER_ID, policy());
+		resealedQuote(ctx, "unverifiable");
+
+		const result = (await rinePay.handler(ctx, {
+			message_id: QUOTE_ID,
+		})) as Record<string, unknown>;
+
+		// Retryable, and distinct from a quote someone else signed: the sender's
+		// key could not be read, so nothing says the quote is forged.
+		expect(result.status).toBe("sender-unverifiable");
+		expect(result.reason).toBe("sender-unverifiable");
 		expect(ctx.client.post).not.toHaveBeenCalled();
 		expect(readDailySpent(CONFIG_DIR, PAYER_ID)).toBe(0n);
 	});

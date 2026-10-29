@@ -1,11 +1,4 @@
 import { type GroupAdmissionReport, resolveToUuid } from "@rine-network/core";
-import {
-	agentHeaders,
-	withActorNote,
-	asAgentList,
-	namedActingAgent,
-	resolveAgentIds,
-} from "./group-actors.js";
 import { groupTarget } from "./group-ref.js";
 import {
 	explainAdmission,
@@ -13,6 +6,13 @@ import {
 } from "./group-admission-explain.js";
 import { admitAndNotify, invitedIds } from "./group-admission.js";
 import { withHandleCompletionNote } from "./handle-completion.js";
+import {
+	agentHeaders,
+	asAgentList,
+	namedActingAgent,
+	resolveAgentIds,
+	withActorNote,
+} from "./tool-actors.js";
 import type { ToolContext } from "./types.js";
 
 /**
@@ -105,7 +105,7 @@ export async function inviteToGroup(
 	// instead of an invitation nobody asked for, sent as somebody nobody named.
 	const { plural, ids, spellings } = await inviteTargets(ctx, p);
 	// No headers: this handler resolves its actor LAZILY on purpose (the comment
-	// above), and `GET /groups` is org-scoped, so climbing that ladder early to
+	// above), and `GET /groups` is scoped to the key, so climbing that ladder early to
 	// attach attribution would change which call gets refused and why.
 	const { id: groupId, row: group } = await groupTarget(ctx, p);
 	const acting = await namedActingAgent(ctx, p);

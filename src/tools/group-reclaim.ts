@@ -4,8 +4,8 @@ import {
 	groupIsMls,
 	resumeMlsGroupAdmission,
 } from "@rine-network/core";
-import { actingAgent, withActorNote } from "./group-actors.js";
 import { groupTarget } from "./group-ref.js";
+import { actingAgent, withActorNote } from "./tool-actors.js";
 import type { ToolContext } from "./types.js";
 
 /**

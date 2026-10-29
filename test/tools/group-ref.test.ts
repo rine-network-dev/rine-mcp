@@ -18,6 +18,7 @@ import { JOIN_REFERENCE_RULE, RineApiError } from "@rine-network/core";
 import { describe, expect, it, vi } from "vitest";
 import { groupInspectTools } from "../../src/tools/groups-inspect.js";
 import { groupAdminTools } from "../../src/tools/groups-admin.js";
+import { groupMemberTools } from "../../src/tools/groups-members.js";
 import { groupRecoveryTools } from "../../src/tools/groups-recovery.js";
 import { groupTools } from "../../src/tools/groups.js";
 import {
@@ -94,6 +95,7 @@ function ctxHolding(rows: Row[]) {
 /** Every group tool this surface registers, from the registries `index.ts` imports. */
 const GROUP_TOOLS: ToolDef[] = [
   ...groupTools,
+  ...groupMemberTools,
   ...groupAdminTools,
   ...groupRecoveryTools,
   ...groupInspectTools,
@@ -363,7 +365,7 @@ function ctxInvitedTo(rows: Row[]): ToolContext {
 }
 
 describe("joinGroupTarget", () => {
-  // Join's target is a group this org is NOT in, so the org-scoped list
+  // Join's target is a group this org is NOT in, so the seat list
   // `groupTarget` searches is the one set that cannot hold it. Same reference,
   // two ladders, and only one of them can answer this — which is why join takes
   // its own helper rather than the one the other nine verbs share.

@@ -2,14 +2,16 @@ import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-	generateAgentKeys,
-	saveAgentKeys,
+	deriveAgent,
+	deriveBranch,
+	deriveOrg,
 	verificationWordsForKey,
 } from "@rine-network/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "../../src/tools/types.js";
+import { FIXTURE_ROOT, seedAgentKeys } from "@rine-network/core/testing";
 
-const mockGetCredentialEntry = vi.fn();
+const mockResolveAuth = vi.fn();
 const mockValidateSlug = vi.fn();
 const mockPerformRegistration = vi.fn();
 const mockPerformAgentCreation = vi.fn();
@@ -18,7 +20,7 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 	const orig = await importOriginal<typeof import("@rine-network/core")>();
 	return {
 		...orig,
-		getCredentialEntry: (...args: unknown[]) => mockGetCredentialEntry(...args),
+		resolveAuth: (...args: unknown[]) => mockResolveAuth(...args),
 		validateSlug: (...args: unknown[]) => mockValidateSlug(...args),
 		performRegistration: (...args: unknown[]) => mockPerformRegistration(...args),
 		performAgentCreation: (...args: unknown[]) => mockPerformAgentCreation(...args),
@@ -30,11 +32,13 @@ const { onboardingTools } = await import("../../src/tools/onboarding.js");
 const rineOnboard = onboardingTools.find((t) => t.name === "rine_onboard")!;
 const rineAgentCreate = onboardingTools.find((t) => t.name === "rine_agent_create")!;
 
-function makeCtx(): ToolContext {
+function makeCtx(configDir = "/tmp/test"): ToolContext {
 	return {
 		client: { get: vi.fn(), post: vi.fn() } as never,
-		configDir: "/tmp/test",
+		configDir,
+		ownerDir: "/tmp/test-owner",
 		apiUrl: "https://api.test",
+		refreshIdentity: vi.fn(),
 	};
 }
 
@@ -52,18 +56,16 @@ let keyedConfigDir: string;
 let keyedWords: string;
 
 function makeKeyedCtx(): ToolContext {
-	return {
-		client: { get: vi.fn(), post: vi.fn() } as never,
-		configDir: keyedConfigDir,
-		apiUrl: "https://api.test",
-	};
+	return makeCtx(keyedConfigDir);
 }
 
 beforeEach(() => {
 	keyedConfigDir = fs.mkdtempSync(join(tmpdir(), "rine-mcp-onboard-"));
-	const keys = generateAgentKeys();
-	saveAgentKeys(keyedConfigDir, KEYED_AGENT_ID, keys);
-	keyedWords = verificationWordsForKey(keys.signing.publicKey);
+	seedAgentKeys(keyedConfigDir, KEYED_AGENT_ID);
+	const branch = deriveBranch(deriveOrg(FIXTURE_ROOT), "main");
+	keyedWords = verificationWordsForKey(
+		deriveAgent(branch, KEYED_AGENT_ID, 0).ed25519.publicKey,
+	);
 });
 
 afterEach(() => {
@@ -71,7 +73,7 @@ afterEach(() => {
 });
 
 function resetAllMocks(): void {
-	mockGetCredentialEntry.mockReset();
+	mockResolveAuth.mockReset();
 	mockValidateSlug.mockReset();
 	mockPerformRegistration.mockReset();
 	mockPerformAgentCreation.mockReset();
@@ -83,9 +85,9 @@ describe("rine_onboard", () => {
 		resetAllMocks();
 	});
 
-	it("returns already_registered when credentials exist", async () => {
+	it("returns already_registered when an identity exists", async () => {
 		const ctx = makeCtx();
-		mockGetCredentialEntry.mockReturnValue({ client_id: "id", client_secret: "secret" });
+		mockResolveAuth.mockReturnValue({ signer: {}, orgId: "org-1" });
 		mockValidateSlug.mockReturnValue(true);
 		const org = { id: "org-1", name: "Acme", slug: "acme" };
 		const agents = { items: [{ id: "a1", name: "bot" }], total: 1 };
@@ -94,18 +96,21 @@ describe("rine_onboard", () => {
 			.mockResolvedValueOnce(agents);
 
 		const result = (await rineOnboard.handler(ctx, validParams)) as {
-			status: string; config_dir: string; org: unknown;
+			status: string; config_dir: string; org: unknown; agents: unknown;
 		};
 
 		expect(result.status).toBe("already_registered");
 		expect(result.config_dir).toBe("/tmp/test");
 		expect(result.org).toEqual(org);
+		expect(result.agents).toEqual(agents);
 		expect(mockPerformRegistration).not.toHaveBeenCalled();
+		// An org another process onboarded is pinned before the first signed request.
+		expect(ctx.refreshIdentity).toHaveBeenCalledTimes(1);
 	});
 
 	it("rejects invalid slug before network call", async () => {
 		const ctx = makeCtx();
-		mockGetCredentialEntry.mockReturnValue(undefined);
+		mockResolveAuth.mockReturnValue(undefined);
 		mockValidateSlug.mockReturnValue(false);
 
 		await expect(rineOnboard.handler(ctx, {
@@ -117,9 +122,13 @@ describe("rine_onboard", () => {
 
 	it("completes full registration flow", async () => {
 		const ctx = makeCtx();
-		mockGetCredentialEntry.mockReturnValue(undefined);
+		mockResolveAuth.mockReturnValue(undefined);
 		mockValidateSlug.mockReturnValue(true);
-		mockPerformRegistration.mockResolvedValue({ org_id: "org-1", client_id: "cid" });
+		mockPerformRegistration.mockResolvedValue({
+			org_id: "org-1",
+			org_words: "alpha bravo",
+			phrase_path: "/tmp/test/recovery-phrase.txt",
+		});
 		mockPerformAgentCreation.mockResolvedValue({
 			id: "00000000-0000-0000-0000-000000000001",
 			name: "bot",
@@ -130,28 +139,74 @@ describe("rine_onboard", () => {
 
 		const result = (await rineOnboard.handler(ctx, validParams)) as {
 			status: string; agent: { handle: string }; poll_url: string;
+			recovery_phrase_file: string;
 		};
 
 		expect(result.status).toBe("registered");
 		expect(result.agent.handle).toBe("bot@acme.rine.network");
 		expect(result.poll_url).toBe("https://api.test/poll/tok");
+		expect(result.recovery_phrase_file).toBe("/tmp/test/recovery-phrase.txt");
 
 		// Core functions called with correct params
 		expect(mockPerformRegistration).toHaveBeenCalledWith(
-			"https://api.test", "/tmp/test", "default",
+			"https://api.test", ctx, "default",
 			{ email: "a@b.com", slug: "acme", name: "Acme" },
 		);
 		expect(mockPerformAgentCreation).toHaveBeenCalledWith(
-			ctx.client, "/tmp/test", "default",
+			ctx.client, ctx, "default",
+			{ name: "bot" },
+		);
+		expect(ctx.refreshIdentity).toHaveBeenCalledTimes(2);
+	});
+
+	it("never returns the recovery phrase, only its file path", async () => {
+		const ctx = makeCtx();
+		mockResolveAuth.mockReturnValue(undefined);
+		mockValidateSlug.mockReturnValue(true);
+		const words = Array.from({ length: 24 }, (_, i) => `word${i}`);
+		const phrase = words.join(" ");
+		const phrasePath = join(keyedConfigDir, "recovery-phrase.txt");
+		fs.writeFileSync(phrasePath, phrase);
+		mockPerformRegistration.mockResolvedValue({
+			org_id: "org-1",
+			org_words: "alpha bravo",
+			phrase_path: phrasePath,
+		});
+		mockPerformAgentCreation.mockResolvedValue({
+			id: KEYED_AGENT_ID,
+			name: "bot",
+			handle: "bot@acme.rine.network",
+			verification_words: keyedWords,
+		});
+
+		const result = await rineOnboard.handler(ctx, validParams);
+		const serialized = JSON.stringify(result);
+
+		expect(serialized).toContain(phrasePath);
+		expect(serialized).not.toContain(phrase);
+		for (let i = 0; i + 4 <= words.length; i++) {
+			expect(serialized).not.toContain(words.slice(i, i + 4).join(" "));
+		}
+
+		expect(mockPerformRegistration).toHaveBeenCalledWith(
+			"https://api.test", ctx, "default",
+			{ email: "a@b.com", slug: "acme", name: "Acme" },
+		);
+		expect(mockPerformAgentCreation).toHaveBeenCalledWith(
+			ctx.client, ctx, "default",
 			{ name: "bot" },
 		);
 	});
 
 	it("recomputes the words from this config dir's key, and ships both values", async () => {
 		const ctx = makeKeyedCtx();
-		mockGetCredentialEntry.mockReturnValue(undefined);
+		mockResolveAuth.mockReturnValue(undefined);
 		mockValidateSlug.mockReturnValue(true);
-		mockPerformRegistration.mockResolvedValue({ org_id: "org-1", client_id: "cid" });
+		mockPerformRegistration.mockResolvedValue({
+			org_id: "org-1",
+			org_words: "alpha bravo",
+			phrase_path: "/tmp/test/recovery-phrase.txt",
+		});
 		mockPerformAgentCreation.mockResolvedValue({
 			id: KEYED_AGENT_ID,
 			name: "bot",
@@ -174,9 +229,13 @@ describe("rine_onboard", () => {
 
 	it("reports a mismatch as a state, keeping both values", async () => {
 		const ctx = makeKeyedCtx();
-		mockGetCredentialEntry.mockReturnValue(undefined);
+		mockResolveAuth.mockReturnValue(undefined);
 		mockValidateSlug.mockReturnValue(true);
-		mockPerformRegistration.mockResolvedValue({ org_id: "org-1", client_id: "cid" });
+		mockPerformRegistration.mockResolvedValue({
+			org_id: "org-1",
+			org_words: "alpha bravo",
+			phrase_path: "/tmp/test/recovery-phrase.txt",
+		});
 		mockPerformAgentCreation.mockResolvedValue({
 			id: KEYED_AGENT_ID,
 			name: "bot",
@@ -195,17 +254,17 @@ describe("rine_onboard", () => {
 
 	it("propagates registration errors", async () => {
 		const ctx = makeCtx();
-		mockGetCredentialEntry.mockReturnValue(undefined);
+		mockResolveAuth.mockReturnValue(undefined);
 		mockValidateSlug.mockReturnValue(true);
-		mockPerformRegistration.mockRejectedValue(new Error("Email or slug already registered"));
+		mockPerformRegistration.mockRejectedValue(new Error("Conflict: Slug already taken"));
 
 		await expect(rineOnboard.handler(ctx, validParams))
-			.rejects.toThrow("Email or slug already registered");
+			.rejects.toThrow("Conflict: Slug already taken");
 	});
 
 	it("propagates rate limit errors", async () => {
 		const ctx = makeCtx();
-		mockGetCredentialEntry.mockReturnValue(undefined);
+		mockResolveAuth.mockReturnValue(undefined);
 		mockValidateSlug.mockReturnValue(true);
 		mockPerformRegistration.mockRejectedValue(new Error("Rate limited — please wait"));
 
@@ -215,7 +274,7 @@ describe("rine_onboard", () => {
 
 	it("propagates challenge expired errors", async () => {
 		const ctx = makeCtx();
-		mockGetCredentialEntry.mockReturnValue(undefined);
+		mockResolveAuth.mockReturnValue(undefined);
 		mockValidateSlug.mockReturnValue(true);
 		mockPerformRegistration.mockRejectedValue(new Error("Challenge expired — please try again"));
 
@@ -225,7 +284,7 @@ describe("rine_onboard", () => {
 
 	it("propagates unsupported algorithm errors", async () => {
 		const ctx = makeCtx();
-		mockGetCredentialEntry.mockReturnValue(undefined);
+		mockResolveAuth.mockReturnValue(undefined);
 		mockValidateSlug.mockReturnValue(true);
 		mockPerformRegistration.mockRejectedValue(
 			new Error("Unsupported algorithm: unknown-v2. Please upgrade."),
@@ -260,9 +319,10 @@ describe("rine_agent_create", () => {
 		expect(result.handle).toBe("helper@acme.rine.network");
 		expect(result.poll_url).toBe("https://api.test/poll/tok2");
 		expect(mockPerformAgentCreation).toHaveBeenCalledWith(
-			ctx.client, "/tmp/test", "default",
+			ctx.client, ctx, "default",
 			{ name: "helper", humanOversight: undefined, unlisted: undefined },
 		);
+		expect(ctx.refreshIdentity).toHaveBeenCalledTimes(1);
 	});
 
 	it("ships the comparison beside the server's words", async () => {
@@ -322,7 +382,7 @@ describe("rine_agent_create", () => {
 		await rineAgentCreate.handler(ctx, { name: "stealth", human_oversight: false, unlisted: true });
 
 		expect(mockPerformAgentCreation).toHaveBeenCalledWith(
-			ctx.client, "/tmp/test", "default",
+			ctx.client, ctx, "default",
 			{ name: "stealth", humanOversight: false, unlisted: true },
 		);
 	});

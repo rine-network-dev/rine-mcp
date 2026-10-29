@@ -18,7 +18,7 @@
 // rather than assumed. The guard's own truth table is proven in
 // `rine-core/test/crypto/mls-downgrade.test.ts`.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "../../src/tools/types.js";
 
 const AGENT_ID = "11111111-1111-1111-1111-111111111111";
@@ -39,7 +39,7 @@ const guardCalls: GuardCall[] = [];
 
 const mockGetOrCreateSenderKey = vi.fn();
 const mockEncryptGroupMessage = vi.fn();
-const mockEncryptMlsGroupMessage = vi.fn();
+const mockSealAndPost = vi.fn();
 
 vi.mock("@rine-network/core", async (importOriginal) => {
 	const orig = await importOriginal<typeof import("@rine-network/core")>();
@@ -47,12 +47,9 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 		...orig,
 		resolveActor: vi.fn(async () => ({ agentId: AGENT_ID })),
 		normalizeHandle: (h: string) => h,
-		processMlsWelcomes: vi.fn(async () => undefined),
-		syncMlsGroup: vi.fn(async () => undefined),
 		getOrCreateSenderKey: (...a: unknown[]) => mockGetOrCreateSenderKey(...a),
 		encryptGroupMessage: (...a: unknown[]) => mockEncryptGroupMessage(...a),
-		encryptMlsGroupMessage: (...a: unknown[]) =>
-			mockEncryptMlsGroupMessage(...a),
+		sealAndPostMlsGroupMessage: (...a: unknown[]) => mockSealAndPost(...a),
 		assertNoMlsDowngrade: (
 			configDir: string,
 			agentId: string,
@@ -97,7 +94,7 @@ beforeEach(() => {
 	guardCalls.length = 0;
 	mockGetOrCreateSenderKey.mockReset();
 	mockEncryptGroupMessage.mockReset();
-	mockEncryptMlsGroupMessage.mockReset();
+	mockSealAndPost.mockReset();
 	mockGetOrCreateSenderKey.mockResolvedValue({
 		state: {},
 		groupId: GROUP_ID,
@@ -108,10 +105,7 @@ beforeEach(() => {
 			encryption_version: "sender-key-v1",
 		},
 	});
-	mockEncryptMlsGroupMessage.mockResolvedValue({
-		encrypted_payload: "enc-mls",
-		encryption_version: "mls-v1",
-	});
+	mockSealAndPost.mockResolvedValue({ id: "msg-mls" });
 });
 
 describe("rine_send — a group send refuses a downgrade", () => {
@@ -177,7 +171,7 @@ describe("rine_send — the branch is the send predicate", () => {
 
 		await send(ctx);
 
-		expect(mockEncryptMlsGroupMessage).toHaveBeenCalledTimes(1);
+		expect(mockSealAndPost).toHaveBeenCalledTimes(1);
 		expect(mockGetOrCreateSenderKey).not.toHaveBeenCalled();
 		expect(guardCalls[0]?.serverSaysMls).toBe(true);
 	});
@@ -214,112 +208,5 @@ describe("rine_send — the branch is the send predicate", () => {
 		await expect(send(ctx)).rejects.toThrow();
 
 		expect(guardCalls[0]?.serverSaysMls).toBe(true);
-	});
-});
-/**
- * The send path's MLS recovery asks about the group it is sending to.
- *
- * The second `processMlsWelcomes` in `encryptMlsWithRecovery` is UNCAUGHT,
- * unlike the pre-sync above it, so whatever refusal that pass raises aborts the
- * send. Left unscoped a pass answers with the first refusal whose bytes arrived
- * in it — and the server picks that order by picking the order of its own
- * welcomes response — so a substituted Welcome for an unrelated group would
- * abort a send that has nothing to do with it. This is the widest surface of
- * the three: OpenClaw inherits it.
- *
- * The mock below is rine-core's own `pickRefusal` rule (`mls-ops-join.ts`):
- * scoped, the named group's refusal; unscoped, the first in the server's order.
- * That rule is measured faithful against the real native core.
- *
- * The Python twin already scopes this path through `install_mls_state`
- * (`_mls/join.py`), so this closes a gap between the two stacks.
- */
-describe("rine_send — the MLS recovery scopes its Welcome pass", () => {
-	const OTHER_GROUP_ID = "66666666-6666-6666-6666-666666666666";
-	// `core` is a value binding from `await import(...)`, so its classes are not
-	// usable in type position without this. (This file is outside tsconfig's
-	// `include`, so tsc would not have caught it.)
-	type Refusal = InstanceType<typeof core.MlsWelcomeRefusedError>;
-
-	/** The refusal the group substitution guard mints, as a pass raises it. */
-	function refusal(groupId: string): Refusal {
-		return new core.MlsWelcomeRefusedError(
-			groupId,
-			"roster_uncorroborated",
-			`Refusing the MLS welcome for group ${groupId}`,
-		);
-	}
-
-	/** rine-core's `pickRefusal`, over a batch in the server's chosen order. */
-	function serverOrders(...batch: Refusal[]) {
-		return async (
-			_configDir: string,
-			_agentId: string,
-			_client: unknown,
-			opts?: { forGroup?: string },
-		) => {
-			const chosen = opts?.forGroup
-				? batch.find((r) => r.groupId === opts.forGroup)
-				: batch[0];
-			if (chosen) throw chosen;
-			return { processed: 0, groupIds: [] };
-		};
-	}
-
-	beforeEach(() => {
-		// Nothing in this file clears the factory mocks, so calls accumulate across
-		// tests — and this describe asserts on a call INDEX.
-		vi.mocked(core.processMlsWelcomes).mockClear();
-		// The recovery arm runs only when the first encrypt reports no local state.
-		mockEncryptMlsGroupMessage.mockRejectedValueOnce(
-			core.noMlsStateError(GROUP_ID),
-		);
-	});
-
-	afterEach(() => {
-		// This mock comes from the module factory and nothing else resets it, so an
-		// implementation set here would otherwise outlive its own test.
-		vi.mocked(core.processMlsWelcomes).mockImplementation(
-			async () => undefined as never,
-		);
-	});
-
-	it("send_when_recovering_and_another_groups_welcome_is_refused_then_the_send_still_lands", async () => {
-		vi.mocked(core.processMlsWelcomes).mockImplementation(
-			serverOrders(refusal(OTHER_GROUP_ID)) as never,
-		);
-		const ctx = makeCtx(makeGroup({ mls_group_id: "opaque-latch" }));
-
-		await send(ctx);
-
-		expect(ctx.client.post).toHaveBeenCalledTimes(1);
-		expect(mockEncryptMlsGroupMessage).toHaveBeenCalledTimes(2);
-	});
-
-	it("send_when_recovering_and_this_groups_welcome_is_refused_then_the_send_fails", async () => {
-		// The decoy is FIRST in the server's order, so an unscoped pass answers
-		// with it and this group's refusal never reaches the caller.
-		vi.mocked(core.processMlsWelcomes).mockImplementation(
-			serverOrders(refusal(OTHER_GROUP_ID), refusal(GROUP_ID)) as never,
-		);
-		const ctx = makeCtx(makeGroup({ mls_group_id: "opaque-latch" }));
-
-		const err = await send(ctx).catch((e: unknown) => e);
-
-		expect(core.isMlsWelcomeRefusedError(err)).toBe(true);
-		expect((err as Refusal).groupId).toBe(GROUP_ID);
-		expect(ctx.client.post).not.toHaveBeenCalled();
-	});
-
-	it("send_when_recovering_names_the_group_being_sent_to", async () => {
-		const ctx = makeCtx(makeGroup({ mls_group_id: "opaque-latch" }));
-
-		await send(ctx);
-
-		// Two passes run: the pre-sync, deliberately unscoped because it is caught,
-		// and the recovery, which is not caught and must name this group.
-		expect(vi.mocked(core.processMlsWelcomes).mock.calls[1]?.[3]).toEqual({
-			forGroup: GROUP_ID,
-		});
 	});
 });

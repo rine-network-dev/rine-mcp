@@ -1,8 +1,10 @@
 import {
+	DEFAULT_PROFILE,
+	PHRASE_INSTRUCTION,
 	compareVerificationWordsForAgent,
-	getCredentialEntry,
 	performAgentCreation,
 	performRegistration,
+	resolveAuth,
 	validateSlug,
 } from "@rine-network/core";
 import type { ToolDef } from "./types.js";
@@ -13,11 +15,19 @@ import type { ToolDef } from "./types.js";
 // `instructions` (server.ts), which OpenClaw never imports. rine_agent_create below is
 // MCP-only and names rine_poll legitimately — scripts/check-skill-tools.mjs holds the line.
 
+/**
+ * What the owner does with the recovery phrase file. The phrase itself must
+ * never enter a model context, so the result names the file and nothing else.
+ */
+const RECOVERY_PHRASE_INSTRUCTION = `Tell the owner to open this file themselves. ${PHRASE_INSTRUCTION} Do not read the file.`;
+
 const rineOnboard: ToolDef = {
 	name: "rine_onboard",
 	description:
 		"Register a new rine organization and create your first agent. " +
-		"Handles PoW challenge (~30-60s), credential storage, and E2EE key generation. " +
+		"Handles the PoW challenge (~30-60s), mints the org root key and the agent's E2EE keys " +
+		"on this machine, and writes the 24-word recovery phrase to a file. " +
+		"The phrase is never returned: the result carries only the file path. " +
 		"Idempotent: returns existing info if already registered.",
 	inputSchema: {
 		type: "object",
@@ -47,8 +57,10 @@ const rineOnboard: ToolDef = {
 		}
 
 		// Guard: already registered
-		const existing = getCredentialEntry(ctx.configDir, "default");
-		if (existing) {
+		if (resolveAuth(ctx)) {
+			// An identity another process onboarded after this server started is not
+			// pinned yet: seed the key-chain pins before the first signed request.
+			ctx.refreshIdentity();
 			const org = await ctx.client.get("/org");
 			const agents = await ctx.client.get("/agents");
 			return {
@@ -58,20 +70,28 @@ const rineOnboard: ToolDef = {
 			};
 		}
 
-		const regResult = await performRegistration(
-			ctx.apiUrl,
-			ctx.configDir,
-			"default",
-			{ email, slug: orgSlug, name: orgName },
-		);
+		const regResult = await performRegistration(ctx.apiUrl, ctx, DEFAULT_PROFILE, {
+			email,
+			slug: orgSlug,
+			name: orgName,
+		});
+		ctx.refreshIdentity();
 
-		const agent = await performAgentCreation(ctx.client, ctx.configDir, "default", {
+		const agent = await performAgentCreation(ctx.client, ctx, DEFAULT_PROFILE, {
 			name: agentName,
 		});
+		ctx.refreshIdentity();
 
 		return {
 			status: "registered",
-			org: { id: regResult.org_id, slug: orgSlug, name: orgName },
+			org: {
+				id: regResult.org_id,
+				slug: orgSlug,
+				name: orgName,
+				verification_words: regResult.org_words,
+			},
+			recovery_phrase_file: regResult.phrase_path,
+			recovery_phrase_instruction: RECOVERY_PHRASE_INSTRUCTION,
 			agent: {
 				id: agent.id,
 				name: agent.name,
@@ -99,7 +119,7 @@ const rineAgentCreate: ToolDef = {
 	name: "rine_agent_create",
 	description:
 		"Create an additional agent in an already-registered org. " +
-		"Generates E2EE key pairs (Ed25519 signing + X25519 encryption) and stores them locally.",
+		"Derives the agent's E2EE keys (signing and post-quantum encryption) from the org root on this machine.",
 	inputSchema: {
 		type: "object",
 		properties: {
@@ -119,11 +139,12 @@ const rineAgentCreate: ToolDef = {
 		required: ["name"],
 	},
 	handler: async (ctx, params) => {
-		const agent = await performAgentCreation(ctx.client, ctx.configDir, "default", {
+		const agent = await performAgentCreation(ctx.client, ctx, DEFAULT_PROFILE, {
 			name: params.name as string,
 			humanOversight: params.human_oversight as boolean | undefined,
 			unlisted: params.unlisted as boolean | undefined,
 		});
+		ctx.refreshIdentity();
 
 		return {
 			id: agent.id,

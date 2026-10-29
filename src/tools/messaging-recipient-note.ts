@@ -32,7 +32,7 @@ const GROUP_RECIPIENT_KEY = "group_recipient";
  *
  * The BYTES are this surface's, deliberately, and are not hoisted into
  * `@rine-network/core`: `groupIdRecipientNote`
- * (`rine-cli/src/commands/messages.ts`) records the ruling — a constant in the
+ * (`rine-cli/src/commands/messages-send-target.ts`) records the ruling — a constant in the
  * shared package is one the Python stack is then expected to twin and a gate is
  * expected to hold, while `RecipientTarget` already carries `spelling` beside
  * `handle` so each surface can compare the two and speak in its own idiom. This

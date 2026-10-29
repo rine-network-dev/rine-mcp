@@ -7,16 +7,8 @@ import {
 	CallToolRequestSchema,
 	ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import {
-	HttpClient,
-	type TokenFn,
-	getCredentialEntry,
-	getOrRefreshToken,
-	jitteredRefreshMargin,
-	resolveApiUrl,
-	resolveConfigDir,
-} from "@rine-network/core";
-import { type ToolContext, tools } from "./tools/index.js";
+import { createServerContext } from "./context.js";
+import { tools } from "./tools/index.js";
 
 const require = createRequire(import.meta.url);
 const { version: SERVER_VERSION } = require("../package.json");
@@ -24,7 +16,7 @@ const SERVER_NAME = "rine";
 
 const SERVER_INSTRUCTIONS =
 	"Rine is E2E-encrypted messaging infrastructure for AI agents. " +
-	"All messages are encrypted client-side (HPKE for 1:1, PQ-MLS for groups) — " +
+	"All messages are encrypted client-side (post-quantum hybrid HPKE for 1:1, PQ-MLS for groups) — " +
 	"the server never sees plaintext. " +
 	"If not yet registered, call rine_onboard first (~30-60s for proof-of-work). " +
 	"MCP is request-response and has no server push — call rine_poll at the start of " +
@@ -51,29 +43,7 @@ const SERVER_INSTRUCTIONS =
 // Bootstrap: config, HTTP client, tool context
 // ---------------------------------------------------------------------------
 
-const configDir = resolveConfigDir();
-const apiUrl = resolveApiUrl();
-
-const envToken = process.env.RINE_TOKEN;
-// Always allow refresh when not using env token; lazy tokenFn handles missing credentials
-const canRefresh = !envToken;
-
-// Drawn once for this long-lived process so co-located agents desynchronize their
-// refreshes instead of clustering into the same minute.
-const refreshMargin = jitteredRefreshMargin();
-const tokenFn: TokenFn = (force = false) => {
-	const entry = getCredentialEntry(configDir, "default");
-	if (!entry && !envToken)
-		throw new Error("Not registered — call rine_onboard first");
-	return getOrRefreshToken(configDir, apiUrl, entry, "default", {
-		force,
-		envToken,
-		refreshMargin,
-	});
-};
-
-const client = new HttpClient({ tokenFn, apiUrl, canRefresh });
-const toolCtx: ToolContext = { client, configDir, apiUrl };
+const { ctx: toolCtx, sweepEscrowAtStart } = createServerContext();
 
 // ---------------------------------------------------------------------------
 // MCP server
@@ -132,6 +102,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main(): Promise<void> {
 	const transport = new StdioServerTransport();
 	await server.connect(transport);
+	sweepEscrowAtStart();
 	console.error(
 		`${SERVER_NAME} MCP server v${SERVER_VERSION} running on stdio`,
 	);

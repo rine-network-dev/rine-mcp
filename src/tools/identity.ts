@@ -1,8 +1,9 @@
-import type { AgentRead, ListResponse, OrgRead } from "@rine-network/core";
+import type { WhoAmIRead } from "@rine-network/core";
 import {
+	DEFAULT_PROFILE,
 	agentKeysExist,
 	getWalletAddress,
-	loadCredentials,
+	getProfile,
 	loadPolicy,
 	verifyIdentitySpiffe,
 	walletKeyExists,
@@ -27,12 +28,12 @@ const rineWhoami: ToolDef = {
 		"resolve one to the agent it names — including your own.",
 	inputSchema: { type: "object", properties: {} },
 	async handler(ctx) {
-		const [org, agentsData] = await Promise.all([
-			ctx.client.get("/org") as Promise<OrgRead>,
-			ctx.client.get("/agents") as Promise<ListResponse<AgentRead>>,
-		]);
+		// `/whoami` answers every principal kind, scoped to what this one may see.
+		const { org, agents: visible } = (await ctx.client.get(
+			"/whoami",
+		)) as WhoAmIRead;
 
-		const agents = agentsData.items.map((a) => ({
+		const agents = visible.map((a) => ({
 			...a,
 			has_keys: agentKeysExist(ctx.configDir, a.id),
 			// x402 wallet: public address only (deriving it needs no secret to
@@ -60,9 +61,7 @@ const rinePoll: ToolDef = {
 		properties: {},
 	},
 	async handler(ctx) {
-		const creds = loadCredentials(ctx.configDir);
-		const entry = creds.default;
-		const pollUrl = entry?.poll_url;
+		const pollUrl = getProfile(ctx.configDir, DEFAULT_PROFILE)?.poll_url;
 
 		if (!pollUrl) {
 			throw new Error(

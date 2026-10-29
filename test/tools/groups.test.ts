@@ -1,5 +1,8 @@
 import {
   ACTOR_SURFACES,
+  GROUP_READERS_NOTICE,
+  MlsEstablishStep,
+  MlsMembershipOutcome,
   MlsWelcomeRefusedError,
   NOT_A_MEMBER_CLAUSE,
   RineApiError,
@@ -12,10 +15,8 @@ import type { ToolContext } from "../../src/tools/types.js";
 
 const mockResolveToUuid = vi.fn();
 const mockResolveActor = vi.fn();
-const mockProcessMlsWelcomes = vi.fn();
-const mockLoadMlsState = vi.fn();
 const mockHoldsMlsState = vi.fn();
-const mockExternalJoinMlsGroup = vi.fn();
+const mockEstablish = vi.fn();
 const mockListMyInvites = vi.fn();
 const mockSendGroupInviteNotification = vi.fn();
 const mockInitMlsGroup = vi.fn();
@@ -28,11 +29,8 @@ vi.mock("@rine-network/core", async (importOriginal) => {
     ...orig,
     resolveToUuid: (...args: unknown[]) => mockResolveToUuid(...args),
     resolveActor: (...args: unknown[]) => mockResolveActor(...args),
-    processMlsWelcomes: (...args: unknown[]) => mockProcessMlsWelcomes(...args),
-    loadMlsState: (...args: unknown[]) => mockLoadMlsState(...args),
     holdsMlsState: (...args: unknown[]) => mockHoldsMlsState(...args),
-    externalJoinMlsGroup: (...args: unknown[]) =>
-      mockExternalJoinMlsGroup(...args),
+    establishMlsMembership: (...args: unknown[]) => mockEstablish(...args),
     listMyInvites: (...args: unknown[]) => mockListMyInvites(...args),
     initMlsGroup: (...args: unknown[]) => mockInitMlsGroup(...args),
     addMlsGroupMember: (...args: unknown[]) => mockAddMlsGroupMember(...args),
@@ -43,8 +41,12 @@ vi.mock("@rine-network/core", async (importOriginal) => {
   };
 });
 
-const { groupTools } = await import("../../src/tools/groups.js");
-const { ACTING_AGENT_PARAM } = await import("../../src/tools/group-actors.js");
+const { groupTools: groupEntryTools } = await import(
+  "../../src/tools/groups.js"
+);
+const { groupMemberTools } = await import("../../src/tools/groups-members.js");
+const groupTools = [...groupEntryTools, ...groupMemberTools];
+const { ACTING_AGENT_PARAM } = await import("../../src/tools/tool-actors.js");
 
 const rineGroupCreate = groupTools.find((t) => t.name === "rine_group_create")!;
 const rineGroupJoin = groupTools.find((t) => t.name === "rine_group_join")!;
@@ -116,6 +118,16 @@ describe("the MCP group tool inventory", () => {
       "rine_group_invites",
     ]);
   });
+});
+
+describe("the verbs that create and enter a group say who can read it", () => {
+  it.each(["rine_group_create", "rine_group_join"])(
+    "%s states the shared member-org disclosure",
+    (name) => {
+      const tool = groupTools.find((t) => t.name === name)!;
+      expect(tool.description).toContain(GROUP_READERS_NOTICE);
+    },
+  );
 });
 
 describe("rine_group_create input schema", () => {
@@ -470,9 +482,7 @@ describe("rine_group_create with a roster", () => {
 describe("rine_group_join", () => {
   beforeEach(() => {
     mockResolveActor.mockReset().mockResolvedValue({ agentId: "joiner" });
-    mockProcessMlsWelcomes.mockReset().mockResolvedValue(undefined);
-    mockLoadMlsState.mockReset().mockReturnValue(null);
-    mockExternalJoinMlsGroup.mockReset().mockResolvedValue({ epoch: 2 });
+    mockEstablish.mockReset().mockResolvedValue({ outcome: MlsMembershipOutcome.NotMls });
   });
 
   it("posts to correct group join path", async () => {
@@ -516,25 +526,17 @@ describe("rine_group_join", () => {
     );
   });
 
-  it("external-self-joins when MLS-active and the Welcome path installed no state", async () => {
+  it("asks the shared establishment for the joiner's state, scoped to the named group", async () => {
     const ctx = makeCtx();
     mockResolveActor.mockResolvedValue({ agentId: "agent-self" });
-    post(ctx).mockResolvedValue({});
+    post(ctx).mockResolvedValue({ agent_id: "agent-self", role: "member" });
     get(ctx).mockResolvedValue({ id: "11111111-1111-1111-1111-111111111111", mls_group_id: "mls-latch" });
 
     await rineGroupJoin.handler(ctx, { group: "11111111-1111-1111-1111-111111111111" });
 
-    // Scoped to the group being joined: without `forGroup` the pass raises
-    // whichever refusal the server's own welcomes response listed first, and
-    // this tool's own filter then classifies the real one as another group's
-    // and only warns.
-    expect(mockProcessMlsWelcomes).toHaveBeenCalledWith(
-      "/tmp/test",
-      "agent-self",
-      ctx.client,
-      { forGroup: "11111111-1111-1111-1111-111111111111" },
-    );
-    expect(mockExternalJoinMlsGroup).toHaveBeenCalledWith(
+    // The group id the caller named, never one the server answered with: the
+    // establishment scopes its Welcome pass to it.
+    expect(mockEstablish).toHaveBeenCalledWith(
       "/tmp/test",
       "agent-self",
       "11111111-1111-1111-1111-111111111111",
@@ -543,93 +545,92 @@ describe("rine_group_join", () => {
     );
   });
 
-  it("does NOT external-self-join when a Welcome already installed MLS state", async () => {
+  it.each([
+    MlsMembershipOutcome.Installed,
+    MlsMembershipOutcome.Held,
+    MlsMembershipOutcome.Reseated,
+    MlsMembershipOutcome.ExternalJoined,
+  ])(
+    "runs the establishment once and returns the join answer when it ends %s",
+    async (outcome) => {
+      const ctx = makeCtx();
+      const row = { agent_id: "agent-self", role: "member" };
+      mockResolveActor.mockResolvedValue({ agentId: "agent-self" });
+      post(ctx).mockResolvedValue(row);
+      get(ctx).mockResolvedValue({ id: "11111111-1111-1111-1111-111111111111", mls_group_id: "mls-latch" });
+      mockEstablish.mockResolvedValue({ outcome });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const result = await rineGroupJoin.handler(ctx, { group: "11111111-1111-1111-1111-111111111111" });
+
+      expect(result).toEqual(row);
+      expect(mockEstablish).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    },
+  );
+
+  it("leaves a non-MLS (sender-key) group with an establishment that reports not_mls and no warning", async () => {
     const ctx = makeCtx();
+    const row = { agent_id: "agent-self", role: "member" };
     mockResolveActor.mockResolvedValue({ agentId: "agent-self" });
-    post(ctx).mockResolvedValue({});
-    get(ctx).mockResolvedValue({ id: "11111111-1111-1111-1111-111111111111", mls_group_id: "mls-latch" });
-    mockLoadMlsState.mockReturnValue({
-      groupId: "11111111-1111-1111-1111-111111111111",
-      epoch: 1,
-      cipherSuite: 0x0001,
-    });
-
-    await rineGroupJoin.handler(ctx, { group: "11111111-1111-1111-1111-111111111111" });
-
-    expect(mockExternalJoinMlsGroup).not.toHaveBeenCalled();
-  });
-
-  it("does NOT external-self-join for a non-MLS (sender-key) group", async () => {
-    const ctx = makeCtx();
-    mockResolveActor.mockResolvedValue({ agentId: "agent-self" });
-    post(ctx).mockResolvedValue({});
+    post(ctx).mockResolvedValue(row);
     get(ctx).mockResolvedValue({ id: "11111111-1111-1111-1111-111111111111" });
-
-    await rineGroupJoin.handler(ctx, { group: "11111111-1111-1111-1111-111111111111" });
-
-    expect(mockLoadMlsState).not.toHaveBeenCalled();
-    expect(mockExternalJoinMlsGroup).not.toHaveBeenCalled();
-  });
-
-  it("swallows external-self-join errors (best-effort) and still returns the join result", async () => {
-    const ctx = makeCtx();
-    mockResolveActor.mockResolvedValue({ agentId: "agent-self" });
-    post(ctx).mockResolvedValue({ joined: true });
-    get(ctx).mockResolvedValue({ id: "11111111-1111-1111-1111-111111111111", mls_group_id: "mls-latch" });
-    mockExternalJoinMlsGroup.mockRejectedValue(new Error("epoch conflict"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const result = await rineGroupJoin.handler(ctx, { group: "11111111-1111-1111-1111-111111111111" });
 
-    expect(result).toEqual({ joined: true });
+    expect(result).toEqual(row);
+    expect(mockEstablish).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("swallows a failed establishment (best-effort) and still returns the join result", async () => {
+    const ctx = makeCtx();
+    const row = { agent_id: "agent-self", role: "member" };
+    mockResolveActor.mockResolvedValue({ agentId: "agent-self" });
+    post(ctx).mockResolvedValue(row);
+    get(ctx).mockResolvedValue({ id: "11111111-1111-1111-1111-111111111111", mls_group_id: "mls-latch" });
+    mockEstablish.mockResolvedValue({
+      outcome: MlsMembershipOutcome.Failed,
+      reason: "epoch conflict",
+      failure: { step: MlsEstablishStep.ExternalJoin, error: new Error("epoch conflict") },
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await rineGroupJoin.handler(ctx, { group: "11111111-1111-1111-1111-111111111111" });
+
+    expect(result).toEqual(row);
+    expect(mockEstablish).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[1])).toContain("epoch conflict");
+    warn.mockRestore();
   });
 
   /**
-   * A batch carrying a refusal for the group being joined AND a decoy for
-   * another, with the decoy listed FIRST by the server. The mock is rine-core's
-   * `pickRefusal` rule (`mls-ops-join.ts`): unscoped, the pass answers with the
-   * first refusal whose bytes arrived this pass, and the server chose that
-   * order; scoped by `forGroup`, it answers about the named group only.
-   *
-   * MEASURED against the real native core with two substituted Welcomes:
-   * unscoped the raise names the decoy and this tool's own filter answers
-   * false, so a server suppressed the refusal for the group being joined with
-   * one throwaway Welcome and the join carried on into the external-commit
-   * fallback for a group it had refused to trust.
+   * The establishment's scoped Welcome pass answers about the named group only
+   * (tested against the real native core in rine-core), so a refusal it raises
+   * for that group fails the call, with no self-join into whatever the server
+   * would hand out next.
    */
-  it("test_join_when_the_server_orders_a_decoy_refusal_first_then_this_groups_refusal_still_fails_the_call", async () => {
+  it("test_join_when_the_establishment_raises_this_groups_refusal_then_the_tool_call_fails_with_it", async () => {
     const ctx = makeCtx();
     mockResolveActor.mockResolvedValue({ agentId: "agent-self" });
-    post(ctx).mockResolvedValue({ joined: true });
+    post(ctx).mockResolvedValue({ agent_id: "agent-self", role: "member" });
     get(ctx).mockResolvedValue({ id: "11111111-1111-1111-1111-111111111111", mls_group_id: "mls-latch" });
-    // Server response order: the decoy first, this group's refusal second.
-    const batch = [
-      new MlsWelcomeRefusedError(
-        "g-decoy",
-        "roster_uncorroborated",
-        "Refusing the MLS welcome for group g-decoy: the roster names nobody.",
-      ),
+    mockEstablish.mockRejectedValue(
       new MlsWelcomeRefusedError(
         "11111111-1111-1111-1111-111111111111",
         "roster_uncorroborated",
         "Refusing the MLS welcome for group 11111111-1111-1111-1111-111111111111: the roster names nobody.",
       ),
-    ];
-    mockProcessMlsWelcomes.mockImplementation(
-      (_dir: string, _agent: string, _client: unknown, opts?: unknown) => {
-        const forGroup = (opts as { forGroup?: string } | undefined)?.forGroup;
-        const chosen = forGroup
-          ? batch.find((r) => r.groupId === forGroup)
-          : batch[0];
-        return chosen ? Promise.reject(chosen) : Promise.resolve(undefined);
-      },
     );
 
     await expect(
       rineGroupJoin.handler(ctx, { group: "11111111-1111-1111-1111-111111111111" }),
     ).rejects.toMatchObject({ code: "RINE_WELCOME_REFUSED", groupId: "11111111-1111-1111-1111-111111111111" });
-    // And the substitution is not papered over by a self-join into whatever
-    // the server would hand out next.
-    expect(mockExternalJoinMlsGroup).not.toHaveBeenCalled();
+    expect(mockEstablish).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -642,8 +643,9 @@ describe("rine_group_roster", () => {
   it("fetches members for group", async () => {
     const ctx = makeCtx();
     const members = [{ agent_id: "a1", role: "admin" }];
+    // `GroupMemberListResponse` always carries `total`.
     get(ctx).mockImplementation(
-      routedGet({ [GROUP_PATH]: GROUP_ROW }, { items: members }),
+      routedGet({ [GROUP_PATH]: GROUP_ROW }, { items: members, total: 1 }),
     );
 
     const result = await rineGroupRoster.handler(ctx, { group: "11111111-1111-1111-1111-111111111111" });
@@ -653,7 +655,7 @@ describe("rine_group_roster", () => {
       undefined,
       {},
     );
-    expect(result).toEqual({ items: members });
+    expect(result).toEqual({ items: members, total: 1 });
   });
 
   // The tool advertised the acting agent and then read it only in the
@@ -1443,7 +1445,7 @@ describe("rine_groups", () => {
     });
   });
 
-  // The list is org-scoped and always was, so a row was never proof the
+  // The list is credential-scoped and the header never narrows it, so a row was never proof the
   // acting agent could post to that group. `member_agent_ids` is what turns the
   // row into an answer, and MCP's rendering is the JSON the model reads — so
   // "renders it" here means it survives the handler untouched.

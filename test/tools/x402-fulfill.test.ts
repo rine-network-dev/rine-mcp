@@ -133,7 +133,7 @@ function paymentMessage(
 		to_agent_id: PAYEE_ID,
 		from_agent_id: PAYER_ID,
 		encrypted_payload: "CIPHERTEXT",
-		encryption_version: "hpke-v1",
+		encryption_version: "hpke-hybrid-v2",
 		...over,
 	};
 }
@@ -495,7 +495,7 @@ describe("rine_fulfill — failure branches (typed outcomes)", () => {
 		// parseX402Payload raises a typed MALFORMED_PAYLOAD before any resolve/settle.
 		mockDecryptMessage.mockResolvedValue({
 			plaintext: JSON.stringify({ payload: {} }),
-			verificationStatus: "valid",
+			verificationStatus: "verified",
 		});
 
 		const result = (await rineFulfill.handler(ctx, {
@@ -624,6 +624,25 @@ describe("rine_fulfill — sender binding on the money path", () => {
 		expect(mockResolvePayeeRequirement).not.toHaveBeenCalled();
 		expect(mockSettleToReceipt).not.toHaveBeenCalled();
 		expect(result.status).toBe("payment-refused");
+	});
+
+	it("returns sender-unverifiable with no receipt when the payer's key could not be read", async () => {
+		const ctx = makeCtx();
+		resealedPayment(ctx, "unverifiable");
+
+		const result = (await rineFulfill.handler(ctx, {
+			message_id: PAYMENT_ID,
+			facilitator: "https://fac.test",
+		})) as Record<string, unknown>;
+
+		// Nothing is settled and no terminal receipt is sent: the same payment is
+		// fulfilled once the key lookup works, exactly like a facilitator outage.
+		expect(mockResolvePayeeRequirement).not.toHaveBeenCalled();
+		expect(mockSettleToReceipt).not.toHaveBeenCalled();
+		expect(mockSendReceipt).not.toHaveBeenCalled();
+		expect(result.status).toBe("sender-unverifiable");
+		expect(result.code).toBe(X402_ERROR.SENDER_UNVERIFIABLE);
+		expect(result.receipt).toBeUndefined();
 	});
 
 	it("REFUSES a payment whose signature does not check out", async () => {

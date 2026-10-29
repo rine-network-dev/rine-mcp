@@ -6,15 +6,15 @@ import {
 	initMlsGroup,
 } from "@rine-network/core";
 import {
-	actingAgent,
-	resolveAgentIds,
-	withActorNote,
-} from "./group-actors.js";
-import {
 	explainAdmission,
 	explainMlsAdmission,
 } from "./group-admission-explain.js";
 import { withHandleCompletionNote } from "./handle-completion.js";
+import {
+	actingAgent,
+	resolveAgentIds,
+	withActorNote,
+} from "./tool-actors.js";
 import type { ToolContext } from "./types.js";
 
 /**

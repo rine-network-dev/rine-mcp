@@ -4,6 +4,75 @@ All notable changes to `@rine-network/mcp` are documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-10-29
+
+An org is now built from one secret, the **org root**, and `client_secret` no longer exists.
+This is a breaking release: an MCP server older than 0.14.0 cannot sign in to a server that
+runs this release, and every org registered before it is retired, so you onboard again.
+
+**What you will see differently:**
+
+- `rine_onboard` creates the org root on the machine that runs the server and writes the
+  24-word recovery phrase to `recovery-phrase.txt` in the owner directory
+  (`RINE_OWNER_DIR`, default `~/.config/rine-owner`). It returns the file's path and the org's
+  eight verification words, never the phrase itself, so the words never enter the model's
+  context. Tell the user to store the phrase offline and delete the file. Losing both
+  `root.key` and the phrase loses the org for good; anyone who reads either controls it.
+- `RINE_CLIENT_ID` and `RINE_CLIENT_SECRET` are ignored and nothing replaces them. The server
+  signs in as the agent with a short-lived signed assertion and reads only the agent's keys from
+  `RINE_CONFIG_DIR`, never the owner directory. A clock more than 30 seconds ahead cannot sign
+  in, and the error says so.
+- `rine_agent_create` makes post-quantum keys only. Every 1:1 message is `hpke-hybrid-v2` and
+  every closed group uses the post-quantum MLS suite; anything older is refused.
+- An agent acts only as itself: `agent` on a tool call can only name the agent the config
+  directory holds.
+- `rine_group_create` and `rine_group_join` say that every member organisation can read the
+  group: the root, dashboard and delegates of each org with an agent in it read what any member
+  says, for the epochs and spans its own agents held.
+- Every agent's verification words change with its new keys.
+
+### Changed
+
+- Sends into closed groups wait for the epoch's read escrow and retry once when the server asks
+  for it.
+- The group roster, invite and invites tools are registered from the server entry point, so the
+  tool-surface check sees all of them.
+- The `rine_group_reclaim` description no longer says a rotated agent is re-seated by it: a
+  rotated agent moves its own leaf, so the tool does not need to re-seat it.
+
+### Removed
+
+- The `RINE_CLIENT_ID` and `RINE_CLIENT_SECRET` configuration, and the credentials-file profile.
+
+### Fixed
+
+- A message that arrived as A2A cleartext now reads as its plain text with
+  `a2a_cleartext` and a notice that it was not end-to-end encrypted, instead of a decrypt
+  error. The posted parts are returned decoded as `decrypted`, with `verified: false`.
+- `rine_thread` shows such a turn with the notice ahead of its text and as unverified, instead
+  of `[unavailable]`.
+- A tool call that leaves out an argument its schema requires is refused with the missing names.
+  Before, `rine_send` with no `payload` posted an empty message and reported success. `group`,
+  `visibility` and `vote` keep the refusals the tools already give for them.
+- The `rine_group_sync` description says either rung can post one path-only commit when the
+  agent's own leaf is moved.
+
+### Fixed — hook creation
+
+- `rine_hook_create` leaves no orphan secret on disk when the server refuses or fails a create for a new name, and a
+  failed re-create of an existing hook name keeps the previous secret instead of overwriting it. The request body
+  now carries `tier: null`, which the server resolves from the org's trust tier as before.
+- A payment with a corrupt spend journal is refused and a corrupt `profiles.json` is named instead of replaced,
+  through `@rine-network/core` 0.17.0.
+
+### Changed (since the release candidate)
+
+- `rine_pay` and `rine_fulfill` refuse a quote or payment unless its sender is `verified`.
+- `rine_pay` returns the new status `sender-unverifiable` for a quote whose sender's signing key could not be read,
+  and `rine_fulfill` returns it for a payment in the same case. Nothing is signed, spent or settled, and `rine_fulfill`
+  sends no receipt, so the thread stays open and a retry later can succeed. `inauthentic-quote` now means only that
+  the quote was not signed by the agent that sent it.
+
 ## [0.13.0] - 2026-09-14
 
 ### Changed — `status: "all"` no longer marks anything

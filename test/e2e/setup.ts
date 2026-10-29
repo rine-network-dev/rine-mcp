@@ -3,18 +3,22 @@
  *
  * - Isolated mode: starts postgres + uvicorn, writes apiUrl to state file.
  * - Production mode: uses RINE_API_URL or defaults to https://rine.network.
+ * - Remote mode: sections against RINE_API_URL (staging); teardown erases the orgs they registered.
  * - Both: ensures MCP dist is built.
  */
 
 import { execSync } from "node:child_process";
 import { existsSync, statSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { isProd, isRemote, PRODUCTION_ORIGIN, STAGING_ORIGIN } from "./helpers.js";
 import type { InfraHandles } from "./infra.js";
+import { releaseOwnerDirs } from "./owners.js";
 
 const STATE_FILE = join(import.meta.dirname, ".e2e-state.json");
 const ORGS_FILE = join(import.meta.dirname, ".e2e-orgs.json");
 
 let infra: InfraHandles | undefined;
+let remoteApiUrl: string | undefined;
 
 export async function setup(): Promise<void> {
 	const mcpRoot = join(import.meta.dirname, "../..");
@@ -35,12 +39,21 @@ export async function setup(): Promise<void> {
 	// Clean stale org state from previous runs
 	try { unlinkSync(ORGS_FILE); } catch { /* ignore */ }
 
-	const isProd = process.env.RINE_E2E_MODE === "production";
-
-	if (isProd) {
-		const apiUrl = process.env.RINE_API_URL ?? "https://rine.network";
+	if (isProd()) {
+		const apiUrl = process.env.RINE_API_URL ?? PRODUCTION_ORIGIN;
 		writeFileSync(STATE_FILE, JSON.stringify({ apiUrl }));
 		console.error(`[e2e] Production mode — ${apiUrl}`);
+		return;
+	}
+
+	if (isRemote()) {
+		const apiUrl = process.env.RINE_API_URL?.replace(/\/$/, "");
+		if (apiUrl !== STAGING_ORIGIN) {
+			throw new Error(`Remote mode only targets ${STAGING_ORIGIN}, got: ${apiUrl ?? "(unset)"}`);
+		}
+		remoteApiUrl = apiUrl;
+		writeFileSync(STATE_FILE, JSON.stringify({ apiUrl }));
+		console.error(`[e2e] Remote mode — ${apiUrl}`);
 		return;
 	}
 
@@ -57,6 +70,7 @@ export async function teardown(): Promise<void> {
 		await infra.cleanup();
 		infra = undefined;
 	}
+	await releaseOwnerDirs(remoteApiUrl);
 	for (const f of [STATE_FILE, ORGS_FILE]) {
 		try { unlinkSync(f); } catch { /* ignore */ }
 	}

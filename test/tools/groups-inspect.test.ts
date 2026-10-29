@@ -33,7 +33,7 @@ const GROUP_ID = "11111111-1111-1111-1111-111111111111";
  * A group as `GET /groups/{id}` and `GET /groups` both render it.
  *
  * One factory for both routes because the server builds both from
- * `_build_group_read` (`src/rine/api/groups.py`) — including
+ * `build_group_read` (`src/rine/api/group_views.py`) — including
  * `member_agent_ids`, which is why the seated-id rung sits on the indexed
  * route with no field this tool reads going missing.
  */
@@ -256,7 +256,7 @@ describe("rine_group_inspect", () => {
     expect(rineGroupInspect.description).toContain("rine_group_roster");
   });
 
-  // This tool finds its group in an ORG-scoped list, so being found here
+  // This tool finds its group in a credential-scoped list, so being found here
   // never meant the acting agent could post. `member_agent_ids` is the field
   // that answers that, and it must survive the spread that adds `encryption`.
   it("passes member_agent_ids through, so the kind and the seat arrive together", async () => {

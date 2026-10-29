@@ -1,57 +1,39 @@
 import {
+	type MlsMembershipResult,
 	ACTING_AGENT_HEADER,
-	type GroupRead,
-	externalJoinMlsGroup,
-	isMlsWelcomeRefusedError,
-	loadMlsState,
-	processMlsWelcomes,
+	establishMlsMembership,
+	reportFailedSetup,
+	seatedMemberAfterConflict,
 } from "@rine-network/core";
-import { actingAgent, withActorNote } from "./group-actors.js";
 import { joinGroupTarget } from "./group-ref.js";
+import { actingAgent, withActorNote } from "./tool-actors.js";
 import type { ToolContext } from "./types.js";
-
-/**
- * For an MLS-active group the joiner just joined, if the Welcome path installed
- * no local MLS state — the open-enrollment case, where the server added them
- * with no member in the loop, so no Welcome was ever minted — self-join via an
- * RFC 9420 external commit so the joiner becomes a real MLS member and can
- * send and receive.
- *
- * No-op for sender-key groups and when a Welcome already established state.
- * Non-fatal, like every other MLS side-effect on this surface.
- */
-async function externalJoinFallback(
-	ctx: ToolContext,
-	agentId: string,
-	groupId: string,
-): Promise<void> {
-	try {
-		const group = (await ctx.client.get(`/groups/${groupId}`)) as GroupRead;
-		if (!group.mls_group_id) return;
-		if (loadMlsState(ctx.configDir, agentId, groupId)) return;
-		await externalJoinMlsGroup(ctx.configDir, agentId, groupId, ctx.client, {
-			[ACTING_AGENT_HEADER]: agentId,
-		});
-	} catch (e) {
-		console.warn(`MLS external self-join failed for group ${groupId}:`, e);
-	}
-}
 
 /**
  * Join a group, then establish whatever local crypto state membership implies.
  *
- * An invitation that an admin has already admitted to MLS is waiting as a
- * Welcome, so processing welcomes is the normal path; the external commit is
- * the fallback for the group nobody could mint one for.
+ * The ladder (a Welcome waiting for the agent, retaking a leaf it holds with no
+ * state, an external commit when it holds none) is rine-core's
+ * `establishMlsMembership`, shared by every TypeScript surface. It runs when the
+ * join answers 200, and when it answers 409 `already_a_member` for an agent
+ * with no local state; a 202 (a request pending approval) runs no MLS step.
  *
- * 🔴 Every MLS step here is non-fatal except one: a Welcome the group
- * substitution guard REFUSED for **this** group. That is a security verdict
- * about who minted the Welcome, so the tool call fails with it rather than
- * returning a join result with a warning on stderr no model will ever read.
- * `rine.groups.join()` on the Python SDK raises the same refusal, and a
- * failure that is loud on one stack and a log line on the other is a defect a
- * user only meets on the quiet one. The rine membership stands either way —
- * the join POST has already returned 200.
+ * 🔴 Every MLS step here is non-fatal except one: a refusal for **this** group
+ * (a Welcome the group substitution guard refused, or a tree holding a member
+ * the agent cannot verify). That is a verdict about the group, so the tool call
+ * fails with it rather than returning a join result with a warning on stderr no
+ * model will ever read. `rine.groups.join()` on the Python SDK raises the same
+ * refusal, and a failure that is loud on one stack and a log line on the other
+ * is a defect a user only meets on the quiet one. The rine membership stands
+ * either way.
+ *
+ * Two kinds of verdict use `MlsWelcomeRefusedError`. Most reasons are the
+ * substitution guard's verdict about who minted a Welcome; retrying the join
+ * does not change them. Reason `peer_not_admitted` is different: the group's
+ * tree holds a member the server no longer vouches for. The Welcome install, the
+ * external join and the seat retake all raise it, and it clears once any member
+ * reclaims that seat with `rine group resume-admission --reclaim`; then repeat
+ * the join.
  */
 export async function joinGroup(
 	ctx: ToolContext,
@@ -68,51 +50,62 @@ export async function joinGroup(
 
 	const body: Record<string, string> = {};
 	if (p.message) body.message = String(p.message);
-	const result = await ctx.client.post(
-		`/groups/${groupId}/join`,
-		body,
-		headers,
-	);
-
-	// Best-effort: install any pending MLS Welcome an admin has already
-	// delivered for this joiner. A no-op when the group is not MLS or no
-	// Welcome is pending yet.
-	//
-	// 🔴 `forGroup` names the group this call is establishing, and it is what
-	// keeps the choice of refusal off the server. Without it the pass raises
-	// "the first refusal whose bytes arrived", in the order the server's own
-	// welcomes response listed them — so one throwaway decoy for another group
-	// made `welcomeRefusedForGroup` answer false and this join carried on into
-	// the external-commit fallback for the group it had just refused to trust
-	// (MEASURED).
+	let result: unknown;
 	try {
-		await processMlsWelcomes(ctx.configDir, agentId, ctx.client, {
-			forGroup: groupId,
-		});
-	} catch (e) {
-		// A refusal naming a DIFFERENT group still warns: the batch installs every
-		// Welcome it can before raising, and that group's verdict is not this
-		// join's to report.
-		if (welcomeRefusedForGroup(e, groupId)) throw e;
-		console.warn("MLS welcome processing failed after join:", e);
+		result = await ctx.client.post(`/groups/${groupId}/join`, body, headers);
+	} catch (err) {
+		// An agent already seated with no local state is brought back; any
+		// other failure, or a seat the setup cannot finish, stands as raised.
+		const seated = await seatedMemberAfterConflict(
+			err,
+			{
+				configDir: ctx.configDir,
+				groupId,
+				client: ctx.client,
+				actingAgent: async () => agentId,
+			},
+			warnFailedSetup(groupId),
+		);
+		if (seated) return withActorNote(seated, acting);
+		throw err;
 	}
 
-	await externalJoinFallback(ctx, agentId, groupId);
+	if (isMemberRow(result))
+		await establishJoinedMls(ctx, groupId, agentId, headers);
 	return withActorNote(result, acting);
 }
 
+/** A join answer that seated the agent, as opposed to a 202's pending request. */
+function isMemberRow(result: unknown): boolean {
+	return typeof result === "object" && result !== null && "role" in result;
+}
+
 /**
- * Whether a failure is the Welcome guard refusing a Welcome for this group.
- *
- * Classified by rine-core's exported code check, never by matching the message
- * — that export exists for this. The `groupId` a refusal carries is the rine
- * group UUID the delivery was filed under, compared case-insensitively because
- * the two ids arrive from different reads, as the Python twin compares them.
+ * Run the shared establishment and warn when it fails; a refusal for this
+ * group propagates.
  */
-function welcomeRefusedForGroup(err: unknown, groupId: string): boolean {
-	if (!isMlsWelcomeRefusedError(err)) return false;
-	const named = (err as { groupId?: unknown }).groupId;
-	return (
-		typeof named === "string" && named.toLowerCase() === groupId.toLowerCase()
+async function establishJoinedMls(
+	ctx: ToolContext,
+	groupId: string,
+	agentId: string,
+	headers: Record<string, string>,
+): Promise<void> {
+	const res = await establishMlsMembership(
+		ctx.configDir,
+		agentId,
+		groupId,
+		ctx.client,
+		headers,
 	);
+	reportFailedSetup(res, warnFailedSetup(groupId));
+}
+
+/** Warn about an establishment that failed. */
+function warnFailedSetup(groupId: string) {
+	return (res: MlsMembershipResult): void => {
+		console.warn(
+			`MLS setup failed after joining group ${groupId}:`,
+			res.failure?.error ?? res.reason,
+		);
+	};
 }

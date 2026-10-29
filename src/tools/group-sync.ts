@@ -1,20 +1,24 @@
 import {
 	ACTING_AGENT_HEADER,
+	describeGapMarkers,
 	describeMlsRecovery,
 	isMlsResyncUnavailable,
+	listGapMarkers,
 	recoverGroup,
 } from "@rine-network/core";
-import { actingAgent, withActorNote } from "./group-actors.js";
 import { groupTarget } from "./group-ref.js";
+import { actingAgent, withActorNote } from "./tool-actors.js";
 import type { ToolContext } from "./types.js";
 
 /**
  * Catch this agent's encryption state up with the group, and say what it cost.
  *
  * Two recoveries, because a rine group runs one of two encryptions. An MLS
- * group walks the epoch ladder: replaying stored commits posts nothing, and the
- * resync rung posts one external commit that is O(N) and billed to every member
- * of the group. A sender-key group has no epoch chain at all — what a member
+ * group walks the epoch ladder: replaying stored commits posts nothing itself, and
+ * the resync rung posts one external commit that is O(N) and billed to every
+ * member of the group. Either rung then moves this agent's own leaf to its current
+ * key, which can post one path-only commit; the result's `seat` says where the
+ * leaf stands. A sender-key group has no epoch chain at all — what a member
  * can be missing there is other members' keys, waiting as distribution DMs in
  * its own inbox, so recovery installs them and posts nothing. Which one ran is
  * `regime`, and `describeMlsRecovery` says it in words.
@@ -48,10 +52,18 @@ export async function syncGroupState(
 			ctx.client,
 			{ [ACTING_AGENT_HEADER]: actingId },
 		);
+		const markers = listGapMarkers(ctx.configDir, actingId);
+		const said = describeMlsRecovery(ref, result);
 		return withActorNote(
 			// The caller's own spelling: `describeMlsRecovery` takes a `groupRef`
 			// precisely so the sentence names the group the way it was asked for.
-			{ ...result, message: describeMlsRecovery(ref, result) },
+			markers.length === 0
+				? { ...result, message: said }
+				: {
+						...result,
+						message: `${said} Epochs with no escrow on this device, across this agent's groups: ${describeGapMarkers(markers)}.`,
+						escrow_gap_markers: markers,
+					},
 			acting,
 		);
 	} catch (err) {

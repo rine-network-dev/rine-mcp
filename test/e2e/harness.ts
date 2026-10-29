@@ -1,8 +1,9 @@
 /**
  * McpHarness — spawns an MCP server process and drives it via protocol.
  *
- * Each harness instance gets its own RINE_CONFIG_DIR (temp or provided),
- * so cross-org tests simply use multiple harnesses against the same backend.
+ * Each harness instance gets its own RINE_CONFIG_DIR (temp or provided) and,
+ * outside production mode, its own RINE_OWNER_DIR beside it (owners.ts), so
+ * cross-org tests simply use multiple harnesses against the same backend.
  */
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -10,6 +11,8 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { isProd } from "./helpers.js";
+import { ownerDirFor, recordOwnerDir } from "./owners.js";
 
 export interface HarnessOptions {
 	apiUrl: string;
@@ -31,6 +34,7 @@ export class McpHarness {
 	private client!: Client;
 	private transport!: StdioClientTransport;
 	private readonly ownedDir: boolean;
+	private readonly ownerDir?: string;
 	private readonly apiUrl: string;
 
 	constructor(opts: HarnessOptions) {
@@ -41,6 +45,11 @@ export class McpHarness {
 		} else {
 			this.configDir = mkdtempSync(join(tmpdir(), "rine-e2e-"));
 			this.ownedDir = true;
+		}
+		if (!isProd()) {
+			this.ownerDir = ownerDirFor(this.configDir);
+			// A provided dir outlives this harness: global teardown erases and removes its owner dir.
+			if (!this.ownedDir) recordOwnerDir(this.ownerDir);
 		}
 	}
 
@@ -59,6 +68,7 @@ export class McpHarness {
 			env: {
 				...process.env,
 				RINE_CONFIG_DIR: this.configDir,
+				...(this.ownerDir && { RINE_OWNER_DIR: this.ownerDir }),
 				RINE_API_URL: this.apiUrl,
 			},
 			stderr: "pipe",
@@ -114,6 +124,7 @@ export class McpHarness {
 		}
 		if (this.ownedDir) {
 			rmSync(this.configDir, { recursive: true, force: true });
+			if (this.ownerDir) rmSync(this.ownerDir, { recursive: true, force: true });
 		}
 	}
 }

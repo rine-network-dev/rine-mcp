@@ -1,9 +1,19 @@
+import * as fs from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SpiffeVerificationError } from "@rine-network/core";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	afterAll,
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 import type { ToolContext } from "../../src/tools/types.js";
 
 const mockAgentKeysExist = vi.fn();
-const mockLoadCredentials = vi.fn();
 const mockWalletKeyExists = vi.fn();
 const mockGetWalletAddress = vi.fn();
 const mockLoadPolicy = vi.fn();
@@ -13,14 +23,32 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 	return {
 		...orig,
 		agentKeysExist: (...args: unknown[]) => mockAgentKeysExist(...args),
-		loadCredentials: (...args: unknown[]) => mockLoadCredentials(...args),
 		walletKeyExists: (...args: unknown[]) => mockWalletKeyExists(...args),
 		getWalletAddress: (...args: unknown[]) => mockGetWalletAddress(...args),
 		loadPolicy: (...args: unknown[]) => mockLoadPolicy(...args),
 	};
 });
 
+const { PrincipalKind, principalString, saveProfiles } =
+	await import("@rine-network/core");
 const { identityTools } = await import("../../src/tools/identity.js");
+
+const ORG_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+const AGENT_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+
+/** A real runtime dir carrying a `default` profile for `poll_url`. */
+function writeProfile(dir: string, pollUrl?: string): void {
+	saveProfiles(dir, {
+		default: {
+			org_id: ORG_ID,
+			principal: principalString({
+				kind: PrincipalKind.Agent,
+				agentId: AGENT_ID,
+			}),
+			...(pollUrl === undefined ? {} : { poll_url: pollUrl }),
+		},
+	});
+}
 
 const rineWhoami = identityTools.find((t) => t.name === "rine_whoami")!;
 const rinePoll = identityTools.find((t) => t.name === "rine_poll")!;
@@ -28,11 +56,13 @@ const rineVerifyIdentity = identityTools.find(
 	(t) => t.name === "rine_verify_identity",
 )!;
 
-function makeCtx(): ToolContext {
+function makeCtx(configDir = "/tmp/test"): ToolContext {
 	return {
 		client: { get: vi.fn(), post: vi.fn() } as never,
-		configDir: "/tmp/test",
+		configDir,
+		ownerDir: "/tmp/test-owner",
 		apiUrl: "https://api.test",
+		refreshIdentity: vi.fn(),
 	};
 }
 
@@ -47,16 +77,15 @@ describe("rine_whoami", () => {
 	it("returns org and agents with has_keys flag", async () => {
 		const ctx = makeCtx();
 		const org = { id: "org-1", name: "Acme", slug: "acme", trust_tier: 1 };
-		const agents = {
-			items: [
-				{ id: "a1", name: "bot", handle: "bot@acme.rine.network" },
-				{ id: "a2", name: "helper", handle: "helper@acme.rine.network" },
-			],
-			total: 2,
-		};
-		(ctx.client.get as ReturnType<typeof vi.fn>)
-			.mockResolvedValueOnce(org)
-			.mockResolvedValueOnce(agents);
+		const agents = [
+			{ id: "a1", name: "bot", handle: "bot@acme.rine.network" },
+			{ id: "a2", name: "helper", handle: "helper@acme.rine.network" },
+		];
+		(ctx.client.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+			org,
+			principal: { kind: "branch", branch: "partner", agent_id: null },
+			agents,
+		});
 		mockAgentKeysExist.mockImplementation(
 			(_dir: string, id: string) => id === "a1",
 		);
@@ -66,6 +95,9 @@ describe("rine_whoami", () => {
 			agents: Array<{ has_keys: boolean }>;
 		};
 		expect(result.org).toEqual(org);
+		// A branch principal is admitted by /whoami only; /org is org-only.
+		expect(ctx.client.get).toHaveBeenCalledTimes(1);
+		expect(ctx.client.get).toHaveBeenCalledWith("/whoami");
 		expect(result.agents).toHaveLength(2);
 		expect(result.agents[0]!.has_keys).toBe(true);
 		expect(result.agents[1]!.has_keys).toBe(false);
@@ -74,16 +106,15 @@ describe("rine_whoami", () => {
 	it("surfaces the wallet address + policy-present flag, never key material", async () => {
 		const ctx = makeCtx();
 		const org = { id: "org-1", name: "Acme", slug: "acme", trust_tier: 2 };
-		const agents = {
-			items: [
-				{ id: "a1", name: "bot", handle: "bot@acme.rine.network" },
-				{ id: "a2", name: "helper", handle: "helper@acme.rine.network" },
-			],
-			total: 2,
-		};
-		(ctx.client.get as ReturnType<typeof vi.fn>)
-			.mockResolvedValueOnce(org)
-			.mockResolvedValueOnce(agents);
+		const agents = [
+			{ id: "a1", name: "bot", handle: "bot@acme.rine.network" },
+			{ id: "a2", name: "helper", handle: "helper@acme.rine.network" },
+		];
+		(ctx.client.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+			org,
+			principal: { kind: "branch", branch: "partner", agent_id: null },
+			agents,
+		});
 		mockAgentKeysExist.mockReturnValue(true);
 		// a1 has a wallet + policy; a2 has neither.
 		mockWalletKeyExists.mockImplementation(
@@ -126,20 +157,20 @@ describe("rine_whoami", () => {
 });
 
 describe("rine_poll", () => {
+	let configDir: string;
+
 	beforeEach(() => {
-		mockLoadCredentials.mockReset();
+		configDir = fs.mkdtempSync(join(tmpdir(), "rine-mcp-poll-test-"));
 		vi.restoreAllMocks();
 	});
 
+	afterEach(() => {
+		fs.rmSync(configDir, { recursive: true, force: true });
+	});
+
 	it("returns count from poll URL", async () => {
-		const ctx = makeCtx();
-		mockLoadCredentials.mockReturnValue({
-			default: {
-				client_id: "x",
-				client_secret: "y",
-				poll_url: "https://api.test/poll/token",
-			},
-		});
+		writeProfile(configDir, "https://api.test/poll/token");
+		const ctx = makeCtx(configDir);
 		vi.stubGlobal(
 			"fetch",
 			vi.fn().mockResolvedValue({
@@ -157,24 +188,16 @@ describe("rine_poll", () => {
 	});
 
 	it("throws when no poll token configured", async () => {
-		const ctx = makeCtx();
-		mockLoadCredentials.mockReturnValue({
-			default: { client_id: "x", client_secret: "y" },
-		});
+		writeProfile(configDir);
+		const ctx = makeCtx(configDir);
 		await expect(rinePoll.handler(ctx, {})).rejects.toThrow(
 			"No poll token found",
 		);
 	});
 
 	it("throws on non-ok response", async () => {
-		const ctx = makeCtx();
-		mockLoadCredentials.mockReturnValue({
-			default: {
-				client_id: "x",
-				client_secret: "y",
-				poll_url: "https://api.test/poll/token",
-			},
-		});
+		writeProfile(configDir, "https://api.test/poll/token");
+		const ctx = makeCtx(configDir);
 		vi.stubGlobal(
 			"fetch",
 			vi.fn().mockResolvedValue({

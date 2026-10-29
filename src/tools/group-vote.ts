@@ -5,13 +5,13 @@ import {
 	type VoteResponse,
 	addMlsGroupMember,
 } from "@rine-network/core";
+import { groupTarget } from "./group-ref.js";
 import {
 	actingAgent,
 	agentHeaders,
 	namedActingAgent,
 	withActorNote,
-} from "./group-actors.js";
-import { groupTarget } from "./group-ref.js";
+} from "./tool-actors.js";
 import type { ToolContext, ToolParams } from "./types.js";
 
 /**

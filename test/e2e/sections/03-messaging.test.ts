@@ -25,14 +25,14 @@ describe.skipIf(isProd())("03 — 1:1 Messaging (HPKE)", () => {
 
 	afterAll(() => closeAll(acme, beta));
 
-	it("3.1 Send by UUID → hpke-v1", async () => {
+	it("3.1 Send by UUID → hpke-hybrid-v2", async () => {
 		const result = await acme.call<Record<string, string>>("rine_send", {
 			to: state.beta.agentId,
 			payload: { task: "validate", amount: 1500 },
 			type: "rine.v1.task_request",
 		});
 		expect(result.id).toBeTruthy();
-		expect(result.encryption_version).toBe("hpke-v1");
+		expect(result.encryption_version).toBe("hpke-hybrid-v2");
 		msg1Id = result.id;
 	});
 
@@ -52,7 +52,7 @@ describe.skipIf(isProd())("03 — 1:1 Messaging (HPKE)", () => {
 			payload: { ping: "handle-test" },
 		});
 		expect(result.id).toBeTruthy();
-		expect(result.encryption_version).toBe("hpke-v1");
+		expect(result.encryption_version).toBe("hpke-hybrid-v2");
 	});
 
 	it("3.4 Send with from handle", async () => {
@@ -61,7 +61,7 @@ describe.skipIf(isProd())("03 — 1:1 Messaging (HPKE)", () => {
 			to: state.beta.agentId,
 			payload: { ping: "from-handle" },
 		});
-		expect(result.encryption_version).toBe("hpke-v1");
+		expect(result.encryption_version).toBe("hpke-hybrid-v2");
 	});
 
 	it("3.5 Cross-org send (beta → acme)", async () => {

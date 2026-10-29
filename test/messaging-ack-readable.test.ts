@@ -21,9 +21,10 @@
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentKeys, MessageRead } from "@rine-network/core";
+import type { MessageRead } from "@rine-network/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "../src/tools/types.js";
+import { FIXTURE_ROOT, keysGet, seedAgentKeys } from "@rine-network/core/testing";
 
 const mockResolveActor = vi.fn();
 
@@ -42,19 +43,17 @@ const realCore =
 		"@rine-network/core",
 	);
 const {
+	deriveAgent,
+	deriveBranch,
+	deriveOrg,
 	encryptGroupMessage,
 	encryptMessage,
-	generateAgentKeys,
 	generateSenderKey,
-	pqPublicKeyToJWK,
-	saveAgentKeys,
 	saveSenderKeyState,
-	signingPublicKeyToJWK,
-	toBase64Url,
 } = realCore;
 
-const { messagingTools } = await import("../src/tools/messaging.js");
-const rineInbox = messagingTools.find((t) => t.name === "rine_inbox")!;
+const { inboxTools } = await import("../src/tools/messaging-inbox.js");
+const rineInbox = inboxTools.find((t) => t.name === "rine_inbox")!;
 
 // Real UUIDs: the group paths carry these into routes the server types as
 // `uuid.UUID`, and a fixture that could not have been a real row is not a test.
@@ -64,25 +63,22 @@ const THIRD_ID = "c3d4e5f6-0718-4293-a4b5-c6d7e8f90a13";
 const GROUP_ID = "d4e5f607-1829-43a4-b5c6-d7e8f90a1b24";
 
 let dir: string;
-const senderKeys: AgentKeys = generateAgentKeys();
-const recipientKeys: AgentKeys = generateAgentKeys();
 
-/** The JWK bundle `GET /agents/{id}/keys` would answer with. */
-function keysResponse(agentId: string, keys: AgentKeys) {
-	const body: Record<string, unknown> = {
-		agent_id: agentId,
-		signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
-		encryption_public_key: {
-			kty: "OKP",
-			crv: "X25519",
-			x: toBase64Url(keys.encryption.publicKey),
-		},
-	};
-	if (keys.pqEncryption) {
-		body.pq_encryption_public_key = pqPublicKeyToJWK(keys.pqEncryption.publicKey);
-	}
-	return body;
-}
+// The recipient's published keys, exactly what `fetchRecipientKeys` would hand
+// back for a fixture-org agent: the seal is built against the same chain the
+// server publishes, so the decrypt genuinely opens.
+const recipientDerived = deriveAgent(
+	deriveBranch(deriveOrg(FIXTURE_ROOT), "main"),
+	RECIPIENT_ID,
+	0,
+);
+const recipientKeys = {
+	encryption: recipientDerived.x25519.publicKey,
+	pqEncryption: recipientDerived.mlKem768.publicKey,
+};
+
+/** A row's server stamp: a decrypt of a row without one fails closed. */
+const CREATED_AT = "2026-10-09T10:00:00.000Z";
 
 /**
  * A ctx whose GET answers the inbox listing and the published-key lookups the
@@ -94,13 +90,7 @@ function makeCtx(rows: MessageRead[]): ToolContext {
 		if (path === `/agents/${RECIPIENT_ID}/messages`) {
 			return Promise.resolve({ items: rows, next_cursor: null });
 		}
-		if (path === `/agents/${SENDER_ID}/keys`) {
-			return Promise.resolve(keysResponse(SENDER_ID, senderKeys));
-		}
-		if (path === `/agents/${THIRD_ID}/keys`) {
-			return Promise.resolve(keysResponse(THIRD_ID, generateAgentKeys()));
-		}
-		return Promise.reject(new Error(`Unexpected GET: ${path}`));
+		return Promise.resolve(keysGet(path));
 	});
 	return {
 		client: {
@@ -109,7 +99,9 @@ function makeCtx(rows: MessageRead[]): ToolContext {
 			markDelivered: vi.fn().mockResolvedValue({ marked: 0 }),
 		} as never,
 		configDir: dir,
+		ownerDir: join(dir, "owner"),
 		apiUrl: "https://api.test",
+		refreshIdentity: vi.fn(),
 	};
 }
 
@@ -129,16 +121,17 @@ async function openableRow(id: string): Promise<MessageRead> {
 	const enc = await encryptMessage(
 		dir,
 		SENDER_ID,
-		recipientKeys.encryption.publicKey,
+		RECIPIENT_ID,
+		recipientKeys,
 		{ text: `opened ${id}` },
-		recipientKeys.pqEncryption?.publicKey,
 	);
 	return {
 		id,
 		type: "rine.v1.dm",
 		from_agent_id: SENDER_ID,
-		encryption_version: enc.encryption_version,
+		encryption_version: "hpke-hybrid-v2",
 		encrypted_payload: enc.encrypted_payload,
+		created_at: CREATED_AT,
 	} as MessageRead;
 }
 
@@ -166,6 +159,7 @@ async function sealedGroupRow(id: string): Promise<MessageRead> {
 		group_id: GROUP_ID,
 		encryption_version: "sender-key-v1",
 		encrypted_payload: enc.encrypted_payload,
+		created_at: CREATED_AT,
 	} as MessageRead;
 }
 
@@ -178,15 +172,16 @@ async function unattributedRow(id: string): Promise<MessageRead> {
 	const enc = await encryptMessage(
 		dir,
 		SENDER_ID,
-		recipientKeys.encryption.publicKey,
+		RECIPIENT_ID,
+		recipientKeys,
 		{ text: "no sender on the row" },
-		recipientKeys.pqEncryption?.publicKey,
 	);
 	return {
 		id,
 		type: "rine.v1.dm",
-		encryption_version: enc.encryption_version,
+		encryption_version: "hpke-hybrid-v2",
 		encrypted_payload: enc.encrypted_payload,
+		created_at: CREATED_AT,
 	} as MessageRead;
 }
 
@@ -235,12 +230,13 @@ async function forgedGroupRow(id: string): Promise<MessageRead> {
 		group_id: GROUP_ID,
 		encryption_version: "sender-key-v1",
 		encrypted_payload: enc.encrypted_payload,
+		created_at: CREATED_AT,
 	} as MessageRead;
 }
 
 /**
  * A row that was never ciphertext: `encryption_version: "none"`, which
- * `src/rine/api/a2a.py` writes for any agent whose A2A card sets
+ * `src/rine/api/a2a_messages.py` writes for any agent whose A2A card sets
  * `a2a_accept_cleartext`, with the parts JSON-encoded into the payload field
  * (`a2a_translate.py`).
  *
@@ -257,6 +253,7 @@ function cleartextRow(id: string): MessageRead {
 		from_agent_id: SENDER_ID,
 		encryption_version: "none",
 		encrypted_payload: JSON.stringify([{ kind: "text", text: `plain ${id}` }]),
+		created_at: CREATED_AT,
 	} as MessageRead;
 }
 
@@ -264,8 +261,8 @@ describe("rine_inbox — the ack list is the rows that were accounted for", () =
 	beforeEach(() => {
 		mockResolveActor.mockReset().mockResolvedValue({ agentId: RECIPIENT_ID });
 		dir = fs.mkdtempSync(join(tmpdir(), "rine-mcp-ack-"));
-		saveAgentKeys(dir, SENDER_ID, senderKeys);
-		saveAgentKeys(dir, RECIPIENT_ID, recipientKeys);
+		seedAgentKeys(dir, SENDER_ID);
+		seedAgentKeys(dir, RECIPIENT_ID);
 	});
 
 	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));

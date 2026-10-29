@@ -28,7 +28,7 @@ import {
 	ACTING_AGENT_PARAM,
 	actingAgent,
 	withActorNote,
-} from "./group-actors.js";
+} from "./tool-actors.js";
 import type { ToolDef } from "./types.js";
 
 /**

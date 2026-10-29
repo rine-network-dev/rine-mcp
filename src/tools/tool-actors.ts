@@ -18,9 +18,9 @@ import type { ToolContext, ToolParams } from "./types.js";
  *
  * It lives with the resolution helpers rather than in any tool module because
  * `agent` means the same thing on all of them: which of the org's agents this
- * call acts as. The group verbs once spelled it `as`, so a differently
- * worded `agent` on the message and hook tools cost nothing; one name for one
- * concept is only worth having if it reads the same everywhere.
+ * call acts as. One name for one concept is only worth having if it reads the
+ * same everywhere, so the group, message and hook tools all describe it in
+ * these words.
  *
  * 🔴 `rine_inspect`'s `agent` is a **lookup target**, not an actor, and must
  * keep its own words (`discovery.ts`).
@@ -237,12 +237,13 @@ export function agentHeaders(agentId: string | null): Record<string, string> {
  * `rine_group_invite` all do. What is left on this rung is three classes where
  * dropping it is the right answer rather than an omission:
  *
- *   * Reads that hand back the server's own response (`rine_group_requests`,
- *     `rine_group_roster`) — there is no object of ours to attach a key to.
- *   * ORG-scoped reads (`rine_groups`, `rine_group_inspect`,
- *     `rine_group_invites`) — the answer does not depend on which agent asked,
+ *   * Reads that hand back the server's page (`rine_group_requests`, `rine_group_invites`), or the
+ *     roster rebuilt from it (`rine_group_roster`) — there is no object of ours
+ *     to attach a key to.
+ *   * Key-scoped reads (`rine_groups`,
+ *     `rine_group_inspect`) — the answer does not depend on the acting-agent header,
  *     so there is nothing about the actor to report. hermes leaves its own
- *     org-scoped reads out of the note deliberately, for that reason
+ *     key-scoped reads out of the note deliberately, for that reason
  *     (`rine-hermes/src/hermes_rine/_client.py`).
  *   * The three tools that learn their actor FROM what they fetch
  *     (`rine_reply`, `rine_pay`, `rine_fulfill`) — the value the caller named

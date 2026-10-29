@@ -19,9 +19,9 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 	};
 });
 
-const { messagingTools } = await import("../../src/tools/messaging.js");
+const { inboxTools } = await import("../../src/tools/messaging-inbox.js");
 
-const rineInbox = messagingTools.find(t => t.name === "rine_inbox")!;
+const rineInbox = inboxTools.find(t => t.name === "rine_inbox")!;
 
 function makeCtx(): ToolContext {
 	return {
@@ -52,7 +52,7 @@ function makeInboxResponse(items: unknown[] = []) {
  * ones, or they assert nothing.
  */
 function openableRow(id: string) {
-	return { id, encryption_version: "hpke-v1", type: "rine.v1.dm", from_agent_id: "sender-uuid-1" };
+	return { id, encryption_version: "hpke-hybrid-v2", type: "rine.v1.dm", from_agent_id: "sender-uuid-1" };
 }
 
 /** Make the mocked 1:1 decrypt open whatever it is handed. */

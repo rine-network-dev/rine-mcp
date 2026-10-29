@@ -6,7 +6,7 @@
  * happens SERVER-side, inside the one `POST /messages/sync` request, which
  * creates the message, delivers it and long-polls for the reply before
  * answering. There is no client-side poll loop here to share with anything, and
- * the encrypt half is `sealDirectMessage`, the same seal `rine_send` uses.
+ * the encrypt half is core's `sealForAgent`, the same seal `rine_send` uses.
  *
  * What the verb does with the recipient REFERENCE — the shared ladder, and the
  * one arm where a 1:1 verb answers differently from `rine_send` — is
@@ -19,20 +19,20 @@ import {
 	REF_CLASS,
 	classifyReference,
 	normalizeHandle,
+	sealForAgent,
 } from "@rine-network/core";
-import {
-	ACTING_AGENT_PARAM,
-	SEND_ACTOR_KEYS,
-	actingAgent,
-	withActorNote,
-} from "./group-actors.js";
 import { openMessage } from "./messaging-decrypt.js";
-import { sealDirectMessage } from "./messaging-encrypt.js";
 import type { OpenedRow } from "./messaging-row.js";
 import {
 	groupIsNotASyncRecipient,
 	oneToOneRecipient,
 } from "./messaging-sync-recipient.js";
+import {
+	ACTING_AGENT_PARAM,
+	SEND_ACTOR_KEYS,
+	actingAgent,
+	withActorNote,
+} from "./tool-actors.js";
 import type { ToolDef } from "./types.js";
 
 /** Seconds the server will hold the request open, and the bounds it accepts. */
@@ -134,10 +134,10 @@ const rineSendAndWait: ToolDef = {
 		}
 
 		const recipientId = target.id;
-		const result = await sealDirectMessage(
-			ctx,
-			agentId,
-			recipientId,
+		const result = await sealForAgent(
+			ctx.client,
+			ctx.configDir,
+			{ senderAgentId: agentId, recipientAgentId: recipientId },
 			p.payload,
 		);
 

@@ -8,14 +8,14 @@ import {
 	retireLocalGroupState,
 	retirementMessage,
 } from "@rine-network/core";
+import { groupTarget } from "./group-ref.js";
+import { withHandleCompletionNote } from "./handle-completion.js";
 import {
 	actingAgent,
 	agentHeaders,
 	namedActingAgent,
 	withActorNote,
-} from "./group-actors.js";
-import { groupTarget } from "./group-ref.js";
-import { withHandleCompletionNote } from "./handle-completion.js";
+} from "./tool-actors.js";
 import type { ToolContext } from "./types.js";
 
 /** The group, or null when it cannot be read — only the sentence depends on it. */
@@ -100,7 +100,7 @@ export async function removeGroupMember(
 	const named = String(p.agent_id);
 	const targetId = await resolveToUuid(ctx.apiUrl, named);
 	// Headerless, like the acting agent below it: a kick that named nobody must
-	// keep working on a multi-agent org, and `GET /groups` is org-scoped anyway.
+	// keep working on a multi-agent org, and `GET /groups` follows the key, not the header, anyway.
 	const { id: groupId } = await groupTarget(ctx, p);
 	const group = await readGroup(ctx, groupId);
 

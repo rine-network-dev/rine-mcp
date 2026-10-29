@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACTING_AGENT_PARAM } from "../src/tools/group-actors.js";
+import { ACTING_AGENT_PARAM } from "../src/tools/tool-actors.js";
 import { tools } from "../src/tools/index.js";
 
 /**

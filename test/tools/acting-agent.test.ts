@@ -18,16 +18,18 @@
 //    verbs used `String(agent)`, and neither refused a non-string.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { actorKeysFor, namesActor } from "../../src/tools/group-actors.js";
+import { actorKeysFor, namesActor } from "../../src/tools/tool-actors.js";
 import { groupTools } from "../../src/tools/groups.js";
 import { hookTools } from "../../src/tools/hooks.js";
+import { inboxTools } from "../../src/tools/messaging-inbox.js";
+import { replyTools } from "../../src/tools/messaging-reply.js";
 import { messagingTools } from "../../src/tools/messaging.js";
 import type { ToolContext } from "../../src/tools/types.js";
 
 const rineGroups = groupTools.find((t) => t.name === "rine_groups")!;
 const rineHookList = hookTools.find((t) => t.name === "rine_hook_list")!;
-const rineInbox = messagingTools.find((t) => t.name === "rine_inbox")!;
-const rineReply = messagingTools.find((t) => t.name === "rine_reply")!;
+const rineInbox = inboxTools.find((t) => t.name === "rine_inbox")!;
+const rineReply = replyTools.find((t) => t.name === "rine_reply")!;
 const rineSend = messagingTools.find((t) => t.name === "rine_send")!;
 
 const BOT = {

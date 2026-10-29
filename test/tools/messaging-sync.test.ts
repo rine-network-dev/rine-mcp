@@ -4,8 +4,7 @@ import type { ToolContext } from "../../src/tools/types.js";
 
 const mockResolveActor = vi.fn();
 const mockResolveRecipient = vi.fn();
-const mockFetchRecipientKeys = vi.fn();
-const mockEncryptMessage = vi.fn();
+const mockSealForAgent = vi.fn();
 const mockAgentKeysExist = vi.fn();
 const mockDecryptMessage = vi.fn();
 
@@ -15,8 +14,7 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 		...orig,
 		resolveActor: (...args: unknown[]) => mockResolveActor(...args),
 		resolveRecipient: (...args: unknown[]) => mockResolveRecipient(...args),
-		fetchRecipientKeys: (...args: unknown[]) => mockFetchRecipientKeys(...args),
-		encryptMessage: (...args: unknown[]) => mockEncryptMessage(...args),
+		sealForAgent: (...args: unknown[]) => mockSealForAgent(...args),
 		agentKeysExist: (...args: unknown[]) => mockAgentKeysExist(...args),
 		decryptMessage: (...args: unknown[]) => mockDecryptMessage(...args),
 	};
@@ -38,14 +36,19 @@ const rineSendAndWait = messagingSyncTools.find(
 	(t) => t.name === "rine_send_and_wait",
 )!;
 
-const AGENT_ID = "sender-uuid";
-const RECIPIENT_ID = "recipient-uuid";
+// Real UUIDs: the ids that reach the seal are bound into the signature scope
+// and the key lookup, and a fixture that could not have been a real row is not
+// a test.
+const AGENT_ID = "a1b2c3d4-e5f6-4071-8293-a4b5c6d7e8f1";
+const RECIPIENT_ID = "b2c3d4e5-f607-4182-93a4-b5c6d7e8f902";
 
 function makeCtx(): ToolContext {
 	return {
 		client: { get: vi.fn(), post: vi.fn() } as never,
 		configDir: "/tmp/test",
+		ownerDir: "/tmp/test-owner",
 		apiUrl: "https://api.test",
+		refreshIdentity: vi.fn(),
 	};
 }
 
@@ -88,8 +91,9 @@ function replyRow() {
 		type: "rine.v1.dm",
 		from_agent_id: RECIPIENT_ID,
 		to_agent_id: AGENT_ID,
-		encryption_version: "hpke-v1",
+		encryption_version: "hpke-hybrid-v2",
 		encrypted_payload: "sealed",
+		created_at: "2026-10-09T10:00:00.000Z",
 	};
 }
 
@@ -99,13 +103,9 @@ describe("rine_send_and_wait", () => {
 		mockResolveRecipient
 			.mockReset()
 			.mockResolvedValue(agentTarget(RECIPIENT_ID, "peer@other.rine.network"));
-		mockFetchRecipientKeys.mockReset().mockResolvedValue({
-			encryption: new Uint8Array([1]),
-			pqEncryption: new Uint8Array([2]),
-		});
-		mockEncryptMessage.mockReset().mockResolvedValue({
+		mockSealForAgent.mockReset().mockResolvedValue({
 			encrypted_payload: "sealed",
-			encryption_version: "hpke-hybrid-v1",
+			encryption_version: "hpke-hybrid-v2",
 			sender_signing_kid: "kid-1",
 		});
 		mockAgentKeysExist.mockReset().mockReturnValue(false);
@@ -133,7 +133,7 @@ describe("rine_send_and_wait", () => {
 			to_agent_id: RECIPIENT_ID,
 			type: "rine.v1.dm",
 			encrypted_payload: "sealed",
-			encryption_version: "hpke-hybrid-v1",
+			encryption_version: "hpke-hybrid-v2",
 		});
 		expect(headers).toEqual({ "X-Rine-Agent": AGENT_ID });
 	});
@@ -217,7 +217,7 @@ describe("rine_send_and_wait", () => {
 		// one.
 		expect(mockResolveRecipient).not.toHaveBeenCalled();
 		expect(mockResolveActor).not.toHaveBeenCalled();
-		expect(mockEncryptMessage).not.toHaveBeenCalled();
+		expect(mockSealForAgent).not.toHaveBeenCalled();
 		expect(post(ctx)).not.toHaveBeenCalled();
 	});
 
@@ -252,7 +252,7 @@ describe("rine_send_and_wait", () => {
 		);
 
 		expect(post(ctx)).not.toHaveBeenCalled();
-		expect(mockEncryptMessage).not.toHaveBeenCalled();
+		expect(mockSealForAgent).not.toHaveBeenCalled();
 	});
 
 	// 🔴 The other half of the ratified route, and the arm that separates this
@@ -288,7 +288,7 @@ describe("rine_send_and_wait", () => {
 		expect(refusal).not.toContain(realCore.GROUP_NOT_FOUND_LEAD);
 		expect(refusal).not.toContain("#ops@acme.rine.network");
 		expect(post(ctx)).not.toHaveBeenCalled();
-		expect(mockEncryptMessage).not.toHaveBeenCalled();
+		expect(mockSealForAgent).not.toHaveBeenCalled();
 	});
 
 	// 🔴 The bounds above, on the verb that fell back. The fall-back may not
@@ -361,7 +361,7 @@ describe("rine_send_and_wait", () => {
 		expect(post(ctx)).not.toHaveBeenCalled();
 	});
 
-	it("seals for the recipient's post-quantum key when it publishes one", async () => {
+	it("seals the payload for the resolved recipient as the acting agent", async () => {
 		const ctx = makeCtx();
 		post(ctx).mockResolvedValue({
 			message: { id: "sent-1" },
@@ -375,12 +375,11 @@ describe("rine_send_and_wait", () => {
 			payload: { text: "ping" },
 		});
 
-		expect(mockEncryptMessage).toHaveBeenCalledWith(
+		expect(mockSealForAgent).toHaveBeenCalledWith(
+			ctx.client,
 			ctx.configDir,
-			AGENT_ID,
-			new Uint8Array([1]),
+			{ senderAgentId: AGENT_ID, recipientAgentId: RECIPIENT_ID },
 			{ text: "ping" },
-			new Uint8Array([2]),
 		);
 	});
 });

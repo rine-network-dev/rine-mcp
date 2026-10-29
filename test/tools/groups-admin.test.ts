@@ -19,6 +19,7 @@ const mockDeleteGroupMember = vi.fn();
 const mockRetireLocalGroupState = vi.fn();
 const mockRecoverGroup = vi.fn();
 const mockIsMlsResyncUnavailable = vi.fn();
+const mockListGapMarkers = vi.fn();
 
 vi.mock("@rine-network/core", async (importOriginal) => {
   const orig = await importOriginal<typeof import("@rine-network/core")>();
@@ -35,9 +36,11 @@ vi.mock("@rine-network/core", async (importOriginal) => {
     recoverGroup: (...args: unknown[]) => mockRecoverGroup(...args),
     isMlsResyncUnavailable: (...args: unknown[]) =>
       mockIsMlsResyncUnavailable(...args),
+    listGapMarkers: (...args: unknown[]) => mockListGapMarkers(...args),
   };
 });
 
+const { MlsRotatedLeafError } = await import("@rine-network/core");
 const { groupAdminTools } = await import("../../src/tools/groups-admin.js");
 const { groupRecoveryTools } =
   await import("../../src/tools/groups-recovery.js");
@@ -101,6 +104,7 @@ beforeEach(() => {
   mockRetireLocalGroupState.mockReset().mockReturnValue({ retired: true });
   mockRecoverGroup.mockReset();
   mockIsMlsResyncUnavailable.mockReset().mockReturnValue(false);
+  mockListGapMarkers.mockReset().mockReturnValue([]);
 });
 
 describe("the MCP group admin tool inventory", () => {
@@ -775,6 +779,34 @@ describe("rine_group_sync", () => {
     expect(String(result.message)).toMatch(/Nothing was committed/);
   });
 
+  it("lists every escrow gap marker on disk for the agent, not only this run's", async () => {
+    const ctx = makeCtx();
+    mockRecoverGroup.mockResolvedValue({
+      regime: "mls",
+      rung: "replay",
+      fromEpoch: 1,
+      epoch: 4,
+      behind: 3,
+      processed: 3,
+      evicted: false,
+    });
+    const marker = {
+      agent_id: "actor-1",
+      group_id: GROUP_ID,
+      epoch: 2,
+      reason: "refused",
+    };
+    mockListGapMarkers.mockReturnValue([marker]);
+
+    const result = (await rineGroupSync.handler(ctx, {
+      group: GROUP_ID,
+    })) as Record<string, unknown>;
+
+    expect(mockListGapMarkers).toHaveBeenCalledWith("/tmp/test", "actor-1");
+    expect(result.escrow_gap_markers).toEqual([marker]);
+    expect(String(result.message)).toContain(`${GROUP_ID} epoch 2 (refused)`);
+  });
+
   // 🔴 ONCE, and the count is the property. This verb used to pay
   // `GET /groups/{id}` twice — the resolve read the row and the handler
   // read it again one request later — and it was the SECOND answer that reached
@@ -948,5 +980,19 @@ describe("rine_group_sync", () => {
     await expect(
       rineGroupSync.handler(ctx, { group: "11111111-1111-1111-1111-111111111111" }),
     ).rejects.toThrow(/no GroupInfo/);
+  });
+
+  it("tells a rotated agent the remedy a member has", async () => {
+    const ctx = makeCtx();
+    mockRecoverGroup.mockRejectedValue(
+      new MlsRotatedLeafError(
+        "22222222-2222-4222-8222-222222222222",
+        "11111111-1111-1111-1111-111111111111",
+      ),
+    );
+
+    await expect(
+      rineGroupSync.handler(ctx, { group: "11111111-1111-1111-1111-111111111111" }),
+    ).rejects.toThrow(/remove the agent and invite it again before it can resync/);
   });
 });

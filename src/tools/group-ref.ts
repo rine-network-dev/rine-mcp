@@ -32,7 +32,7 @@ import type { ToolContext, ToolParams } from "./types.js";
  * The one description of the group parameter, for every verb that acts on a
  * group this org is already in.
  *
- * Shared for the reason `ACTING_AGENT_PARAM` is (`group-actors.ts`): `group`
+ * Shared for the reason `ACTING_AGENT_PARAM` is (`tool-actors.ts`): `group`
  * means the same thing on all nine, and nine copies of a sentence about which
  * spellings resolve is nine chances for one of them to advertise a spelling
  * this surface refuses. It names all three spellings and the bound on the
@@ -47,7 +47,7 @@ export const GROUP_REF_PARAM = {
 	description:
 		"The group: its handle (`#logistics@acme.rine.network`), its name " +
 		"(`logistics`), or its UUID. A name or a partial handle is resolved " +
-		"against the groups your org is in, so you do not need to look an id up " +
+		"against the groups your key can see (an org key's are the groups the org's agents are seated in), so you do not need to look an id up " +
 		"first; a reference that answers to more than one of them is refused, " +
 		"naming the candidates, rather than guessed at.",
 };
@@ -126,7 +126,7 @@ export function groupRefArgument(p: ToolParams): string {
  * reworded to stop telling.
  *
  * `extraHeaders` carries `X-Rine-Agent` where the handler already has one in
- * hand. It is attribution and never selection — `GET /groups` is org-scoped —
+ * hand. It is attribution and never selection — `GET /groups` follows the key —
  * so the handlers that resolve their acting agent late deliberately (invite,
  * remove) pass none rather than climbing that ladder early and changing what
  * their own refusals are about.
@@ -143,9 +143,10 @@ export async function groupTarget(
  * The same, through the join-scoped ladder.
  *
  * 🔴 Deliberately not {@link groupTarget}. Join's target is a group this org
- * does not hold a seat in, so the org-scoped list `resolveGroup` searches is
- * the one set that cannot contain it; `resolveGroupUuidForJoin` walks the seats,
- * then this agent's invitations, then the public directory. The reasons and the
+ * does not hold a seat in, so the groups your key can see, which
+ * `resolveGroup` searches, are the one set that cannot contain it; `resolveGroupUuidForJoin` walks the seats,
+ * then this agent's invitations, then the open and voted groups its org holds a seat in,
+ * then the public directory. The reasons and the
  * bounds are `rine-core/src/resolve-group-join.ts`'s.
  *
  * The record is `rine-core`'s loose {@link GroupTarget} and NOT
